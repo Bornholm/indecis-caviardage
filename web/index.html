@@ -41,6 +41,9 @@
   .summary .note { margin: 0; }
   .summary .dl { margin-left: auto; width: auto; }
   .warn { margin: 10px 0 0; padding: 8px 12px; border-radius: 8px; background: #2b2412; color: var(--warn); font-size: 14px; }
+  ul.redetected { margin: 4px 0 6px; padding: 0 10px; background: #1d1a12; border-radius: 8px; }
+  ul.redetected li:first-child { border-top: none; }
+  .tag.warntag { background: #2b2412; border-color: #5a4512; color: var(--warn); }
   .filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 4px; }
   .chip { font: inherit; font-size: 14px; font-weight: 400; width: auto; display: inline-flex; gap: 6px; align-items: center;
     padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #232837; color: var(--fg); }
@@ -226,6 +229,18 @@ function render() {
     dl);
   out.append(sum);
   for (const w of result.warnings || []) out.append(el("div", "warn", "⚠ " + w));
+  if ((result.redetected || []).length) {
+    const box = el("ul", "items redetected");
+    for (const x of result.redetected) {
+      const li = el("li");
+      const ctx = el("div", "ctx");
+      ctx.append(x.before ? "…" + x.before : "", el("mark", "show", x.text), x.after ? x.after + "…" : "");
+      li.append(el("div", "kind", ""), el("div", "value", x.text), ctx);
+      li.firstChild.append(el("span", "tag warntag", "À vérifier"));
+      box.append(li);
+    }
+    out.append(box);
+  }
 
   const counts = {};
   for (const x of items) counts[key(x)] = (counts[key(x)] || 0) + 1;

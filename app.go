@@ -133,6 +133,9 @@ type response struct {
 	Replaced int       `json:"replaced"`
 	Seconds  float64   `json:"seconds"`
 	Warnings []string  `json:"warnings,omitempty"`
+	// Redetected lists what go-anon's verification found again in the
+	// output, outside the replaced passages: to check by eye.
+	Redetected []element `json:"redetected,omitempty"`
 }
 
 func (a *app) redact(w http.ResponseWriter, r *http.Request) {
@@ -248,8 +251,9 @@ func (a *app) process(open func(string) (docprocessor.Walker, error), in, out st
 	}
 	defer session.Close()
 	res := &response{Replaced: report.TotalEntities(), Elements: elements(session.Mapping, paragraphs, sensitive)}
-	if n := len(report.Leaks) + len(report.DocumentLeaks); n > 0 {
-		res.Warnings = append(res.Warnings, fmt.Sprintf("%d passage(s) redétecté(s) après remplacement : relire le document", n))
+	res.Redetected = redetected(walker, report)
+	if n := len(res.Redetected); n > 0 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("La vérification a relevé %d passage(s) restés en clair, listés ci-dessous : intitulés sans risque, ou oublis à masquer à la main.", n))
 	}
 	if n := len(report.RegionLeaks); n > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("%d élément(s) dans du contenu non modifiable (images, champs), restés lisibles", n))
@@ -283,6 +287,43 @@ func (a *app) process(open func(string) (docprocessor.Walker, error), in, out st
 		res.Warnings = append(res.Warnings, fmt.Sprintf("%d élément(s) encore lisible(s) dans le document produit", len(visual)))
 	}
 	return res, nil
+}
+
+// redetected reads, in the pseudonymized document, the passages go-anon's
+// verification found outside the replacements: per paragraph, and in the
+// document recomposed with spaces, as the verification builds it. The
+// placeholders in their context show as blocks.
+func redetected(walker docprocessor.Walker, report *docprocessor.Report) []element {
+	var outputs []string
+	walker.Walk(func(seg docprocessor.Segment) error {
+		outputs = append(outputs, seg.Text)
+		return nil
+	})
+	joined := strings.Join(outputs, " ")
+	var out []element
+	seen := map[string]bool{}
+	add := func(text string, start, end int) {
+		if start < 0 || end > len(text) || start >= end {
+			return
+		}
+		passage := strings.TrimSpace(text[start:end])
+		if passage == "" || seen[passage] {
+			return
+		}
+		seen[passage] = true
+		blocks := func(s string) string { return placeholderRe.ReplaceAllString(s, "██") }
+		out = append(out, element{Type: "", Text: passage,
+			Before: blocks(around(text[:start], true)), After: blocks(around(text[end:], false))})
+	}
+	for _, l := range report.Leaks {
+		if l.Segment < len(outputs) {
+			add(outputs[l.Segment], l.Start, l.End)
+		}
+	}
+	for _, l := range report.DocumentLeaks {
+		add(joined, l.Start, l.End)
+	}
+	return out
 }
 
 // placeholderRe matches go-anon's placeholders, ⟦TYPE_N_nonce⟧.
