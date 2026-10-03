@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8">
+<style>
+body { margin: 0; background: #0e1016; color: #e4e6ec; font: 16px system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+.cols { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 14px 18px 18px; min-height: 0; }
+.col { display: flex; flex-direction: column; min-height: 0; }
+h2 { margin: 0 0 8px; font-size: 17px; color: #8b92a3; font-weight: 600; }
+iframe { flex: 1; width: 100%; border: 0; border-radius: 6px; background: #fff; }
+</style>
+<div class="cols">
+<div class="col"><h2>Document d'origine</h2><iframe id="a" src="original.html"></iframe></div>
+<div class="col"><h2>Document caviardé (.docx produit)</h2><iframe id="b" src="caviarde.html"></iframe></div>
+</div>

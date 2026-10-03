@@ -1,0 +1,11 @@
+/bin/
+/video/node_modules/
+/video/raw/
+/video/*.webm
+/video/*.mp4
+/video/frame_*.png
+/video/r.json
+/video/*.docx
+/video/original.html
+/video/caviarde.html
+/video/captions.srt

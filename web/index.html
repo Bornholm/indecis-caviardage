@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caviardage RGPD, indecis</title>
+<style>
+  :root {
+    --bg: #0e1016; --panel: #171a23; --line: #2a2f3d; --fg: #e4e6ec; --dim: #8b92a3;
+    --accent: #6aa6ff; --warn: #ffb020; --bad: #eb5046; --ink: #0b1020;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, sans-serif; min-height: 100vh; }
+  header { padding: 18px 28px 8px; }
+  h1 { margin: 0; font-size: 28px; }
+  header p { margin: 4px 0 0; color: var(--dim); }
+  main { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 20px; padding: 12px 28px 28px; align-items: start; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  aside { display: flex; flex-direction: column; gap: 14px; }
+  h2 { margin: 0 0 10px; font-size: 17px; }
+  .drop { display: block; border: 2px dashed var(--line); border-radius: 12px; padding: 26px 16px; text-align: center; cursor: pointer;
+    color: var(--dim); transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #131826; }
+  .drop strong { display: block; color: var(--fg); font-size: 17px; margin-bottom: 4px; word-break: break-word; }
+  .drop input { display: none; }
+  label.opt { display: block; margin: 12px 0 4px; }
+  .slider { display: flex; align-items: center; gap: 10px; }
+  .slider input { flex: 1; }
+  .slider output { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; }
+  .scale { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; }
+  .modes { display: flex; gap: 8px; margin-top: 6px; }
+  .modes label { flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; text-align: center; }
+  .modes input { display: none; }
+  .modes label:has(input:checked) { border-color: var(--accent); background: #18213a; }
+  button, a.button { font: inherit; color: var(--ink); background: var(--accent); border: none; border-radius: 8px;
+    padding: 10px 14px; cursor: pointer; font-weight: 600; width: 100%; text-decoration: none; display: block; text-align: center; }
+  button:disabled { opacity: .45; cursor: default; }
+  .note { color: var(--dim); font-size: 14px; margin: 8px 0 0; }
+  .summary { display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: center; }
+  .summary .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .summary .note { margin: 0; }
+  .summary .dl { margin-left: auto; width: auto; }
+  .warn { margin: 10px 0 0; padding: 8px 12px; border-radius: 8px; background: #2b2412; color: var(--warn); font-size: 14px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 4px; }
+  .chip { font: inherit; font-size: 14px; font-weight: 400; width: auto; display: inline-flex; gap: 6px; align-items: center;
+    padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #232837; color: var(--fg); }
+  .chip.on { border-color: var(--accent); background: #18213a; }
+  .chip.sens { border-color: #6b2522; }
+  .chip i { font-style: normal; color: var(--dim); font-variant-numeric: tabular-nums; }
+  ul.items { list-style: none; margin: 8px 0 0; padding: 0; }
+  ul.items li { border-top: 1px solid var(--line); padding: 10px 2px; display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 4px 14px; }
+  .kind { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; grid-row: span 2; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: #232837; border: 1px solid var(--line); white-space: nowrap; }
+  .tag.sens { background: #3a1716; border-color: #6b2522; color: #ffb4ad; }
+  .value { font-weight: 600; word-break: break-word; }
+  .ctx { color: var(--dim); font-size: 14px; word-break: break-word; }
+  .ctx mark { background: var(--fg); color: transparent; border-radius: 2px; cursor: pointer; }
+  .ctx mark.show { background: #3a4a72; color: var(--fg); }
+  .empty { color: var(--dim); padding: 30px 0; text-align: center; }
+  .busy { display: flex; align-items: center; gap: 12px; color: var(--dim); }
+  .spin { width: 18px; height: 18px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s 1s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .error { color: var(--bad); }
+  footer { padding: 0 28px 20px; color: var(--dim); font-size: 14px; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; padding: 12px 16px 24px; }
+    header, footer { padding-left: 16px; padding-right: 16px; }
+    ul.items li { grid-template-columns: 1fr; }
+    .kind { grid-row: auto; flex-direction: row; }
+    .summary .dl { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Caviardage RGPD</h1>
+  <p>indecis · Go pur sur CPU, sans GPU · le document ne quitte pas cette machine et n'y est pas conservé</p>
+</header>
+<main>
+  <aside>
+    <section>
+      <h2>1. Document</h2>
+      <label class="drop" id="drop">
+        <strong id="fname">Déposer un document ici</strong>
+        <span id="fhint">ou cliquer pour choisir un fichier Word (.docx) ou OpenDocument (.odt)</span>
+        <input type="file" id="file" accept=".docx,.odt">
+      </label>
+    </section>
+    <section>
+      <h2>2. Réglages</h2>
+      <label class="opt" for="bias">Prudence</label>
+      <div class="slider"><input type="range" id="bias" min="3" max="8" step="1" value="5"><output id="biasv">5</output></div>
+      <div class="scale"><span>texte plus lisible</span><span>moins de fuites</span></div>
+      <p class="note" id="biasnote"></p>
+      <label class="opt">Remplacer par</label>
+      <div class="modes">
+        <label><input type="radio" name="mode" value="redact" checked>██████</label>
+        <label><input type="radio" name="mode" value="tag">⟦PERSON_1⟧</label>
+      </div>
+      <p class="note">Le caviardage est irréversible. La pseudonymisation garde les liens : une même personne reçoit le même pseudonyme dans tout le document.</p>
+    </section>
+    <button id="go" disabled>Caviarder</button>
+  </aside>
+  <div>
+    <section id="out">
+      <div class="empty">Le document caviardé et la liste des éléments masqués s'afficheront ici.</div>
+    </section>
+  </div>
+</main>
+<footer>
+  Les passages à masquer sont trouvés par un modèle indecis entraîné sur des données publiques et synthétiques : noms et identifiants, mais aussi quasi-identifiants (métier, lieu, date, proches, événements de vie) et données sensibles (santé, syndicat, convictions…). go-anon réécrit le document, vérifie le résultat et en retire les métadonnées, commentaires et révisions. Un contrôle humain reste nécessaire avant toute diffusion.
+</footer>
+<script>
+const $ = (id) => document.getElementById(id);
+const TYPES = {
+  PERSON: "Personne", PER: "Personne", CODE: "Identifiant", LOC: "Lieu", LOCATION: "Lieu", ORG: "Organisation", ORGANIZATION: "Organisation",
+  DEM: "Caractéristique", DATETIME: "Date ou durée", QUANTITY: "Montant ou nombre", MISC: "Autre",
+  EMAIL: "Courriel", PHONE: "Téléphone", IBAN: "IBAN", SIRET: "SIRET", SIREN: "SIREN", IPV4: "Adresse IP", IPV6: "Adresse IP",
+  API_KEY: "Secret", JWT: "Secret", SECRET: "Secret",
+};
+const SENSITIVE = {
+  HEALTH: "Santé", UNION: "Syndicat", BELIEF: "Convictions", POLITICS: "Opinions politiques",
+  ORIGIN: "Origine", SEXUALITY: "Vie sexuelle", OFFENCE: "Infractions",
+};
+const BIAS_NOTES = {
+  3: "Masque le moins : texte le plus lisible, davantage de fuites.",
+  4: "Masque peu : des quasi-identifiants peuvent rester lisibles.",
+  5: "Recommandé : environ 2 % des passages personnels restent exposés dans nos tests.",
+  6: "Prudent : environ 1 % des passages personnels restent exposés dans nos tests, au prix de masques en trop.",
+  7: "Très prudent : moins de fuites, davantage de masques superflus.",
+  8: "Maximal : masque largement, le texte devient difficile à lire.",
+};
+let file = null, result = null, filter = null;
+
+const drop = $("drop");
+["dragenter", "dragover"].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", (ev) => choose(ev.dataTransfer.files[0]));
+$("file").addEventListener("change", (ev) => choose(ev.target.files[0]));
+$("bias").addEventListener("input", showBias);
+$("go").addEventListener("click", run);
+showBias();
+
+function choose(f) {
+  if (!f) return;
+  if (!/\.(docx|odt)$/i.test(f.name)) {
+    $("fname").textContent = "Format non pris en charge";
+    $("fhint").textContent = "Word (.docx) ou OpenDocument (.odt)";
+    file = null; $("go").disabled = true;
+    return;
+  }
+  file = f;
+  $("fname").textContent = f.name;
+  $("fhint").textContent = Math.max(1, Math.round(f.size / 1024)) + " ko · cliquer pour en choisir un autre";
+  $("go").disabled = false;
+}
+
+function showBias() {
+  $("biasv").textContent = $("bias").value;
+  $("biasnote").textContent = BIAS_NOTES[$("bias").value];
+}
+
+async function run() {
+  if (!file) return;
+  $("go").disabled = true;
+  const t0 = performance.now();
+  $("out").innerHTML = '<div class="busy"><div class="spin"></div><span id="elapsed">Analyse du document…</span></div>';
+  const tick = setInterval(() => {
+    const e = $("elapsed");
+    if (e) e.textContent = "Analyse du document… " + ((performance.now() - t0) / 1000).toFixed(0) + " s";
+  }, 500);
+  const form = new FormData();
+  form.append("document", file);
+  form.append("bias", $("bias").value);
+  form.append("strategy", document.querySelector("input[name=mode]:checked").value);
+  try {
+    const r = await fetch("/api/redact", { method: "POST", body: form });
+    const body = await r.json().catch(() => ({ error: r.statusText }));
+    if (!r.ok) throw new Error(body.error || r.statusText);
+    result = body; filter = null;
+    render();
+  } catch (e) {
+    $("out").replaceChildren(el("p", "error", "Échec : " + e.message));
+  } finally {
+    clearInterval(tick);
+    $("go").disabled = false;
+  }
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function label(t) { return TYPES[t] || t; }
+// key groups an element for the filters: its special category if it has
+// one, its type otherwise.
+function key(x) { return x.sensitive ? "S:" + x.sensitive : label(x.type); }
+function keyLabel(k) { return k.startsWith("S:") ? (SENSITIVE[k.slice(2)] || k.slice(2)) : k; }
+
+function render() {
+  const out = $("out");
+  out.replaceChildren();
+  const items = result.elements;
+
+  const sum = el("div", "summary");
+  const stat = (big, note) => { const d = el("div"); d.append(el("div", "big", big), el("div", "note", note)); return d; };
+  const dl = el("a", "button dl", "Télécharger " + result.name);
+  dl.href = result.download;
+  sum.append(
+    stat(items.length, "éléments distincts masqués"),
+    stat(items.filter((x) => x.sensitive).length, "données sensibles"),
+    stat(result.seconds.toFixed(1) + " s", result.replaced + " remplacements"),
+    dl);
+  out.append(sum);
+  for (const w of result.warnings || []) out.append(el("div", "warn", "⚠ " + w));
+
+  const counts = {};
+  for (const x of items) counts[key(x)] = (counts[key(x)] || 0) + 1;
+  const bar = el("div", "filters");
+  const all = el("button", "chip" + (filter === null ? " on" : ""), "Tout");
+  all.append(el("i", null, items.length));
+  all.onclick = () => { filter = null; render(); };
+  bar.append(all);
+  const keys = Object.keys(counts).sort((a, b) => (b.startsWith("S:") - a.startsWith("S:")) || counts[b] - counts[a]);
+  for (const k of keys) {
+    const c = el("button", "chip" + (k.startsWith("S:") ? " sens" : "") + (filter === k ? " on" : ""), keyLabel(k));
+    c.append(el("i", null, counts[k]));
+    c.onclick = () => { filter = filter === k ? null : k; render(); };
+    bar.append(c);
+  }
+  out.append(bar);
+
+  const ul = el("ul", "items");
+  const shown = items.filter((x) => filter === null || key(x) === filter);
+  if (shown.length === 0) ul.append(el("li", "empty", "Aucun élément masqué."));
+  for (const x of shown) {
+    const li = el("li");
+    const kind = el("div", "kind");
+    kind.append(el("span", "tag", label(x.type)));
+    if (x.sensitive) kind.append(el("span", "tag sens", SENSITIVE[x.sensitive] || x.sensitive));
+    const ctx = el("div", "ctx");
+    const m = el("mark", null, x.text);
+    m.title = "Cliquer pour voir le passage masqué";
+    m.onclick = () => m.classList.toggle("show");
+    ctx.append(x.before ? "…" + x.before : "", m, x.after ? x.after + "…" : "");
+    li.append(kind, el("div", "value", x.text), ctx);
+    ul.append(li);
+  }
+  out.append(ul);
+}
+</script>
+</body>
+</html>
