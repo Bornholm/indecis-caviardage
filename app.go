@@ -313,7 +313,7 @@ func redetected(walker docprocessor.Walker, report *docprocessor.Report) []eleme
 		seen[passage] = true
 		blocks := func(s string) string { return placeholderRe.ReplaceAllString(s, "██") }
 		out = append(out, element{Type: "", Text: passage,
-			Before: blocks(around(text[:start], true)), After: blocks(around(text[end:], false))})
+			Before: around(blocks(text[:start]), true), After: around(blocks(text[end:]), false)})
 	}
 	for _, l := range report.Leaks {
 		if l.Segment < len(outputs) {

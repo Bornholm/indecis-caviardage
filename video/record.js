@@ -8,6 +8,7 @@ const W = 1280, H = 720;
 const here = __dirname;
 const file = (n) => 'http://127.0.0.1:8072/' + n;
 const result = JSON.parse(fs.readFileSync(path.join(here, 'r.json')));
+const redetected = (result.redetected || []).map((x) => x.text);
 
 const captions = [];
 let t0 = 0, current = null;
@@ -91,6 +92,11 @@ async function moveTo(page, sel, opts = {}) {
   await wait(2500);
   const secs = await page.evaluate(() => document.querySelectorAll('.summary .big')[2].textContent);
   say(`Résultat en ${secs} : ${result.elements.length} éléments distincts masqués, et le document à télécharger.`);
+  await wait(4500);
+  say("La vérification relit le document produit et liste ce qui est resté en clair, à contrôler.");
+  await moveTo(page, 'ul.redetected');
+  await wait(4000);
+  say("Ici, « vendredi » renvoie à la pratique religieuse de la salariée : un oubli à masquer à la main.");
   await wait(4500);
 
   say("Chaque élément est listé avec son type et son contexte : personnes, identifiants, dates, lieux…");
