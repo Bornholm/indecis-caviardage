@@ -209,6 +209,16 @@ function render() {
   const stat = (big, note) => { const d = el("div"); d.append(el("div", "big", big), el("div", "note", note)); return d; };
   const dl = el("a", "button dl", "Télécharger " + result.name);
   dl.href = result.download;
+  // The server deletes the document at its first download.
+  dl.addEventListener("click", () => {
+    setTimeout(() => {
+      dl.textContent = "Téléchargé, supprimé du serveur";
+      dl.removeAttribute("href");
+      dl.style.opacity = ".5";
+      result.downloaded = true;
+    }, 0);
+  });
+  if (result.downloaded) { dl.textContent = "Téléchargé, supprimé du serveur"; dl.removeAttribute("href"); dl.style.opacity = ".5"; }
   sum.append(
     stat(items.length, "éléments distincts masqués"),
     stat(items.filter((x) => x.sensitive).length, "données sensibles"),

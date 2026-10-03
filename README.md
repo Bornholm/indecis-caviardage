@@ -2,6 +2,14 @@
 
 Un démonstrateur de caviardage RGPD : on dépose un document Word ou OpenDocument, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
 
+## Ce que le serveur garde, et combien de temps
+
+- Le document reçu et le document produit sont écrits pendant le traitement dans un dossier de `/dev/shm`, en mémoire, jamais sur disque quand ce répertoire existe ; le dossier est supprimé à la fin de la requête, et au démarrage si un arrêt brutal l'avait laissé.
+- Le document caviardé attend son téléchargement en mémoire, au plus 15 minutes. Il est supprimé dès le premier téléchargement, ou à son expiration (purge chaque minute), ses octets effacés.
+- La liste des éléments masqués, qui contient les valeurs d'origine, est envoyée au navigateur pour l'affichage ; le serveur ne la garde pas.
+- Les journaux ne portent que le format, la taille, le nombre d'éléments et la durée, jamais de contenu.
+- Go ne remet pas à zéro la mémoire qu'il libère : des fragments peuvent subsister dans le processus tant qu'elle n'est pas réutilisée. Arrêter le serveur après usage les efface.
+
 ```bash
 make run    # http://127.0.0.1:8071
 ```

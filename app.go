@@ -35,8 +35,38 @@ var walkers = map[string]func(string) (docprocessor.Walker, error){
 }
 
 // keep is how long a redacted document waits to be downloaded, in memory
-// only.
+// only. It is deleted at its first download, or when it expires.
 const keep = 15 * time.Minute
+
+// tempPrefix names the directories a document is processed in: go-anon's
+// DOCX and ODT readers only read files.
+const tempPrefix = "caviardage-"
+
+// tempRoot is where documents are processed: /dev/shm, in memory, when it
+// is available, so that no document is written to a disk whatever /tmp
+// is; the system's temporary directory otherwise.
+func tempRoot() string {
+	if dir, err := os.MkdirTemp("/dev/shm", tempPrefix+"probe-"); err == nil {
+		os.Remove(dir)
+		return "/dev/shm"
+	}
+	return os.TempDir()
+}
+
+// cleanTemp removes the processing directories a previous run left behind
+// when it was stopped in the middle of a document.
+func cleanTemp(root string) int {
+	n := 0
+	for _, r := range []string{root, os.TempDir()} {
+		dirs, _ := filepath.Glob(filepath.Join(r, tempPrefix+"*"))
+		for _, d := range dirs {
+			if os.RemoveAll(d) == nil {
+				n++
+			}
+		}
+	}
+	return n
+}
 
 type app struct {
 	m       *indecis.Model
@@ -46,6 +76,8 @@ type app struct {
 	// One document at a time: the model's bias is set for each, and a
 	// document already takes every core.
 	work sync.Mutex
+
+	tmp string // see tempRoot
 
 	mu    sync.Mutex
 	files map[string]result
@@ -58,7 +90,30 @@ type result struct {
 }
 
 func newApp(m *indecis.Model, log *slog.Logger, maxSize int64) *app {
-	return &app{m: m, log: log, maxSize: maxSize, files: map[string]result{}}
+	a := &app{m: m, log: log, maxSize: maxSize, files: map[string]result{}, tmp: tempRoot()}
+	if n := cleanTemp(a.tmp); n > 0 {
+		log.Info("removed processing directories left by a previous run", "count", n)
+	}
+	go func() {
+		for range time.Tick(time.Minute) {
+			a.purge()
+		}
+	}()
+	return a
+}
+
+// purge forgets the expired documents, their bytes overwritten first: Go
+// does not clear the memory it frees.
+func (a *app) purge() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	for k, v := range a.files {
+		if now.After(v.expires) {
+			clear(v.data)
+			delete(a.files, k)
+		}
+	}
 }
 
 // element is a passage redacted, as the page lists it.
@@ -103,7 +158,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		strategy = anonymizer.TagReplace
 	}
 
-	dir, err := os.MkdirTemp("", "caviardage-")
+	dir, err := os.MkdirTemp(a.tmp, tempPrefix)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -302,26 +357,25 @@ func (a *app) store(name string, data []byte) string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
+	a.purge()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := time.Now()
-	for k, v := range a.files {
-		if now.After(v.expires) {
-			delete(a.files, k)
-		}
-	}
-	a.files[token] = result{name: name, data: data, expires: now.Add(keep)}
+	a.files[token] = result{name: name, data: data, expires: time.Now().Add(keep)}
 	return token
 }
 
 func (a *app) download(w http.ResponseWriter, r *http.Request) {
+	// Served once: the document leaves the server's memory with its
+	// download.
 	a.mu.Lock()
 	res, ok := a.files[r.PathValue("token")]
+	delete(a.files, r.PathValue("token"))
 	a.mu.Unlock()
 	if !ok || time.Now().After(res.expires) {
-		http.Error(w, "document expiré : recommencez", http.StatusNotFound)
+		http.Error(w, "document déjà téléchargé ou expiré : recommencez", http.StatusNotFound)
 		return
 	}
+	defer clear(res.data)
 	ctype := mime.TypeByExtension(filepath.Ext(res.name))
 	if ctype == "" {
 		ctype = "application/octet-stream"
