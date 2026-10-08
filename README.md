@@ -2,6 +2,17 @@
 
 Un démonstrateur de caviardage RGPD : on dépose un document Word ou OpenDocument, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
 
+La version tout navigateur est en ligne : https://bornholm.github.io/indecis-caviardage/
+
+## Le modèle
+
+Le modèle `work-fam` d'[indecis-ner](https://github.com/Bornholm/indecis-ner) est joint à ses releases. Les commandes `make` l'attendent dans `../indecis-ner/runs/work-fam`, ou dans le dossier donné par `MODEL` :
+
+```bash
+gh release download v0.1.0 --repo Bornholm/indecis-ner --dir model
+make run MODEL=model
+```
+
 ## Ce que le serveur garde, et combien de temps
 
 - Le document reçu et le document produit sont écrits pendant le traitement dans un dossier de `/dev/shm`, en mémoire, jamais sur disque quand ce répertoire existe ; le dossier est supprimé à la fin de la requête, et au démarrage si un arrêt brutal l'avait laissé.
@@ -34,7 +45,7 @@ make serve  # produit dist/ et le sert sur http://127.0.0.1:8073
 
 ## Fonctionnement
 
-Un modèle [indecis](https://github.com/Bornholm/indecis) de 7,7 millions de paramètres, entraîné dans [indecis-ner](../indecis-ner), lit le document en entier et repère les passages à masquer : identifiants directs (nom, NIR, courriel, téléphone, adresse), quasi-identifiants (métier, lieu, date, proches, événements de vie) et données sensibles de l'article 9. [go-anon](../go-anon) réécrit le document dans son format, y repasse une détection pour vérifier, et en retire les métadonnées, commentaires et révisions ; ses expressions régulières complètent le modèle pour les identifiants (courriel, IBAN, téléphone, SIRET).
+Un modèle [indecis](https://github.com/Bornholm/indecis) de 7,7 millions de paramètres, entraîné dans [indecis-ner](https://github.com/Bornholm/indecis-ner), lit le document en entier et repère les passages à masquer : identifiants directs (nom, NIR, courriel, téléphone, adresse), quasi-identifiants (métier, lieu, date, proches, événements de vie) et données sensibles de l'article 9. [go-anon](https://github.com/Bornholm/go-anon) réécrit le document dans son format, y repasse une détection pour vérifier, et en retire les métadonnées, commentaires et révisions ; ses expressions régulières complètent le modèle pour les identifiants (courriel, IBAN, téléphone, SIRET).
 
 La liste vient de la table de correspondance de go-anon : elle donne exactement ce qui a été remplacé. Le traitement pseudonymise d'abord, puis, en mode caviardage, remplace les pseudonymes par des blocs.
 
