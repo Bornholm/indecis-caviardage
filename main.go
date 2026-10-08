@@ -1,3 +1,5 @@
+//go:build !js
+
 // Command indecis-caviardage redacts the personal data of Word and ODT
 // documents in a browser page, and lists what it redacted. Everything
 // runs on this machine, on CPU: an indecis model finds the passages to
@@ -28,6 +30,11 @@ import (
 //go:embed web
 var web embed.FS
 
+// demo holds the fictitious document the page offers to try.
+//
+//go:embed demo/compte-rendu.docx demo/compte-rendu.odt
+var demo embed.FS
+
 func main() {
 	model := flag.String("model", "../indecis-ner/runs/work-fam", "indecis masking model (mask and sensitive questions)")
 	addr := flag.String("addr", "127.0.0.1:8071", "listen address")
@@ -51,6 +58,7 @@ func main() {
 	static, _ := fs.Sub(web, "web")
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServer(http.FS(static)))
+	mux.Handle("GET /demo/", http.FileServer(http.FS(demo)))
 	mux.HandleFunc("POST /api/redact", a.redact)
 	mux.HandleFunc("GET /api/download/{token}", a.download)
 	log.Info("open in a browser", "url", "http://"+*addr)

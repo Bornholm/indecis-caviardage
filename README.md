@@ -19,6 +19,19 @@ make run    # http://127.0.0.1:8071
 3. Choisir entre le **caviardage** (██████, irréversible) et la **pseudonymisation** (⟦PERSON_1⟧ : une même personne garde le même pseudonyme dans tout le document).
 4. Télécharger le document produit, et parcourir la liste des éléments masqués : type, contexte, nombre d'occurrences, et catégorie sensible (santé, syndicat, convictions, origine, opinions politiques, vie sexuelle, infractions).
 
+## Version tout navigateur
+
+```bash
+make serve  # produit dist/ et le sert sur http://127.0.0.1:8073
+```
+
+`make wasm` produit dans `dist/` la même page, avec le même traitement compilé en WebAssembly : le document ne quitte pas le navigateur. `dist/` ne contient que des fichiers statiques (environ 340 Mo, le modèle compris), à servir avec n'importe quel serveur web.
+
+- Le modèle est téléchargé au premier chargement de la page, puis gardé dans le cache du navigateur tant que sa version ne change pas. Ce cache demande https ou localhost, et le navigateur peut le refuser faute de place : le modèle est alors téléchargé à chaque visite.
+- Le calcul tourne dans un Web Worker, sur un seul cœur : le WebAssembly de Go n'a pas de threads. Il faut compter environ 1 Go de mémoire pour l'onglet.
+- Le panneau « Ce navigateur » indique si le calcul profite des instructions vectorielles du processeur, par WebAssembly SIMD (128 bits). Sans elles, la page charge un second module compilé sans SIMD, environ dix fois plus lent.
+- Le document de `demo/` se traite en 3,1 s dans Chromium avec SIMD et en 28,5 s sans, contre 0,3 s avec le serveur (int8 et assembleur natifs).
+
 ## Fonctionnement
 
 Un modèle [indecis](https://github.com/Bornholm/indecis) de 7,7 millions de paramètres, entraîné dans [indecis-ner](../indecis-ner), lit le document en entier et repère les passages à masquer : identifiants directs (nom, NIR, courriel, téléphone, adresse), quasi-identifiants (métier, lieu, date, proches, événements de vie) et données sensibles de l'article 9. [go-anon](../go-anon) réécrit le document dans son format, y repasse une détection pour vérifier, et en retire les métadonnées, commentaires et révisions ; ses expressions régulières complètent le modèle pour les identifiants (courriel, IBAN, téléphone, SIRET).

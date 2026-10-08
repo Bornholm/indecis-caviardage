@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- "server": documents go to /api/redact; "local": to the WebAssembly
+     build in a Web Worker (make wasm rewrites this value). -->
+<meta name="mode" content="server">
 <title>Caviardage RGPD, indecis</title>
 <style>
   :root {
@@ -36,6 +39,7 @@
     padding: 10px 14px; cursor: pointer; font-weight: 600; width: 100%; text-decoration: none; display: block; text-align: center; }
   button:disabled { opacity: .45; cursor: default; }
   .note { color: var(--dim); font-size: 14px; margin: 8px 0 0; }
+  .note a { color: var(--accent); }
   .summary { display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: center; }
   .summary .big { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .summary .note { margin: 0; }
@@ -64,6 +68,12 @@
   .spin { width: 18px; height: 18px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s 1s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }
   .error { color: var(--bad); }
+  dl.hw { margin: 10px 0 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; font-size: 14px; }
+  dl.hw dt { color: var(--dim); }
+  dl.hw dd { margin: 0; }
+  .ok { color: #6fd08c; }
+  .meh { color: var(--warn); }
+  progress { width: 100%; accent-color: var(--accent); }
   footer { padding: 0 28px 20px; color: var(--dim); font-size: 14px; }
   @media (max-width: 900px) {
     main { grid-template-columns: 1fr; padding: 12px 16px 24px; }
@@ -77,7 +87,7 @@
 <body>
 <header>
   <h1>Caviardage RGPD</h1>
-  <p>indecis · Go pur sur CPU, sans GPU · le document ne quitte pas cette machine et n'y est pas conservé</p>
+  <p id="tagline">indecis · Go pur sur CPU, sans GPU · le document ne quitte pas cette machine et n'y est pas conservé</p>
 </header>
 <main>
   <aside>
@@ -88,6 +98,8 @@
         <span id="fhint">ou cliquer pour choisir un fichier Word (.docx) ou OpenDocument (.odt)</span>
         <input type="file" id="file" accept=".docx,.odt">
       </label>
+      <p class="note">Pour essayer : un compte rendu d'entretien fictif, à télécharger puis déposer ci-dessus,
+        en <a href="demo/compte-rendu.docx" download>Word</a> ou en <a href="demo/compte-rendu.odt" download>OpenDocument</a>.</p>
     </section>
     <section>
       <h2>2. Réglages</h2>
@@ -101,6 +113,11 @@
         <label><input type="radio" name="mode" value="tag">⟦PERSON_1⟧</label>
       </div>
       <p class="note">Le caviardage est irréversible. La pseudonymisation garde les liens : une même personne reçoit le même pseudonyme dans tout le document.</p>
+    </section>
+    <section id="machine" hidden>
+      <h2>Ce navigateur</h2>
+      <div id="mstatus" class="note">Chargement du modèle…</div>
+      <dl class="hw" id="hw" hidden></dl>
     </section>
     <button id="go" disabled>Caviarder</button>
   </aside>
@@ -133,7 +150,10 @@ const BIAS_NOTES = {
   7: "Très prudent : moins de fuites, davantage de masques superflus.",
   8: "Maximal : masque largement, le texte devient difficile à lire.",
 };
+const LOCAL = document.querySelector("meta[name=mode]").content === "local";
 let file = null, result = null, filter = null;
+let worker = null, modelReady = !LOCAL, nextId = 0;
+const pending = new Map(); // worker requests by id
 
 const drop = $("drop");
 ["dragenter", "dragover"].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add("over"); }));
@@ -143,6 +163,7 @@ $("file").addEventListener("change", (ev) => choose(ev.target.files[0]));
 $("bias").addEventListener("input", showBias);
 $("go").addEventListener("click", run);
 showBias();
+if (LOCAL) startLocal();
 
 function choose(f) {
   if (!f) return;
@@ -155,7 +176,79 @@ function choose(f) {
   file = f;
   $("fname").textContent = f.name;
   $("fhint").textContent = Math.max(1, Math.round(f.size / 1024)) + " ko · cliquer pour en choisir un autre";
-  $("go").disabled = false;
+  $("go").disabled = !modelReady;
+}
+
+// startLocal loads the model in the Web Worker that will redact the
+// documents, showing the download and then what accelerates the
+// computation in this browser.
+function startLocal() {
+  $("tagline").textContent = "indecis · Go compilé en WebAssembly, sur CPU · le document ne quitte pas ce navigateur et n'y est pas conservé";
+  $("machine").hidden = false;
+  const text = el("span", null, "Chargement du modèle…");
+  const bar = el("progress");
+  bar.max = 1;
+  bar.value = 0;
+  $("mstatus").replaceChildren(text, bar);
+  const mb = (n) => Math.round(n / 2 ** 20);
+  worker = new Worker("worker.js");
+  worker.onmessage = ({ data: m }) => {
+    if (m.type === "progress") {
+      bar.value = m.loaded / m.total;
+      text.textContent = (m.fromCache ? "Lecture du modèle en cache… " : "Téléchargement du modèle… ") + mb(m.loaded) + " / " + mb(m.total) + " Mo";
+    } else if (m.type === "ready") {
+      modelReady = true;
+      $("mstatus").textContent = "Modèle prêt en " + m.seconds.toFixed(1) + " s, " + (m.fromCache ? "lu dans le cache du navigateur."
+        : m.stored ? "téléchargé et gardé dans le cache du navigateur." : "téléchargé, sans place dans le cache du navigateur : il le sera à chaque visite.");
+      showHardware(m.hardware);
+      $("go").disabled = !file;
+    } else if (m.type === "error") {
+      $("mstatus").replaceChildren(el("span", "error", "Échec du chargement : " + m.message));
+    } else if (m.type === "result") {
+      const p = pending.get(m.id);
+      pending.delete(m.id);
+      m.error ? p.reject(new Error(m.error)) : p.resolve(m);
+    }
+  };
+}
+
+// showHardware lists what the browser offers the computation. The
+// processor is not visible from a page: its vector instructions show
+// through WebAssembly SIMD, which the engine enables only when the
+// processor has them (SSE4.1 on x86, Neon on ARM).
+function showHardware(h) {
+  const dl = $("hw");
+  dl.replaceChildren();
+  const row = (term, cls, text, title) => {
+    const dd = el("dd", cls, text);
+    if (title) dd.title = title;
+    dl.append(el("dt", null, term), dd);
+  };
+  if (h.simd && !h.simdEmulated) {
+    row("SIMD", "ok", "oui, " + h.vectorBits + " bits (WebAssembly SIMD)",
+      "Le processeur exécute les calculs du modèle par vecteurs de " + h.vectorBits / 32 + " nombres.");
+  } else {
+    row("SIMD", "meh", "non : calcul nombre par nombre, environ dix fois plus lent",
+      "Ce navigateur, ou le processeur sous lui, ne prend pas en charge WebAssembly SIMD.");
+  }
+  row("Cœurs", null, "1 utilisé" + (h.cores ? " sur " + h.cores : ""),
+    "Le WebAssembly produit par Go n'a pas de threads : le calcul tient sur un cœur.");
+  row("Module", null, h.wasm);
+  dl.hidden = false;
+}
+
+// redactLocal hands the document to the worker; the document produced
+// comes back as a Blob to download.
+async function redactLocal(f, bias, strategy) {
+  const bytes = await f.arrayBuffer();
+  const id = nextId++;
+  const m = await new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, name: f.name, bytes, bias: Number(bias), strategy }, [bytes]);
+  });
+  if (result && result.download.startsWith("blob:")) URL.revokeObjectURL(result.download);
+  m.response.download = URL.createObjectURL(new Blob([m.document], { type: f.type || "application/octet-stream" }));
+  return m.response;
 }
 
 function showBias() {
@@ -172,14 +265,20 @@ async function run() {
     const e = $("elapsed");
     if (e) e.textContent = "Analyse du document… " + ((performance.now() - t0) / 1000).toFixed(0) + " s";
   }, 500);
-  const form = new FormData();
-  form.append("document", file);
-  form.append("bias", $("bias").value);
-  form.append("strategy", document.querySelector("input[name=mode]:checked").value);
+  const strategy = document.querySelector("input[name=mode]:checked").value;
   try {
-    const r = await fetch("/api/redact", { method: "POST", body: form });
-    const body = await r.json().catch(() => ({ error: r.statusText }));
-    if (!r.ok) throw new Error(body.error || r.statusText);
+    let body;
+    if (LOCAL) {
+      body = await redactLocal(file, $("bias").value, strategy);
+    } else {
+      const form = new FormData();
+      form.append("document", file);
+      form.append("bias", $("bias").value);
+      form.append("strategy", strategy);
+      const r = await fetch("/api/redact", { method: "POST", body: form });
+      body = await r.json().catch(() => ({ error: r.statusText }));
+      if (!r.ok) throw new Error(body.error || r.statusText);
+    }
     result = body; filter = null;
     render();
   } catch (e) {
@@ -212,8 +311,9 @@ function render() {
   const stat = (big, note) => { const d = el("div"); d.append(el("div", "big", big), el("div", "note", note)); return d; };
   const dl = el("a", "button dl", "Télécharger " + result.name);
   dl.href = result.download;
+  if (LOCAL) dl.download = result.name;
   // The server deletes the document at its first download.
-  dl.addEventListener("click", () => {
+  if (!LOCAL) dl.addEventListener("click", () => {
     setTimeout(() => {
       dl.textContent = "Téléchargé, supprimé du serveur";
       dl.removeAttribute("href");
