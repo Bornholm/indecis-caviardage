@@ -6,7 +6,7 @@
 <!-- "server": documents go to /api/redact; "local": to the WebAssembly
      build in a Web Worker (make wasm rewrites this value). -->
 <meta name="mode" content="server">
-<title>Caviardage RGPD, indecis</title>
+<title>Indecis Caviardage</title>
 <style>
   :root {
     --bg: #0e1016; --panel: #171a23; --line: #2a2f3d; --fg: #e4e6ec; --dim: #8b92a3;
@@ -86,7 +86,7 @@
 </head>
 <body>
 <header>
-  <h1>Caviardage RGPD</h1>
+  <h1>Indecis Caviardage</h1>
   <p id="tagline">indecis · Go pur sur CPU, sans GPU · le document ne quitte pas cette machine et n'y est pas conservé</p>
 </header>
 <main>
@@ -128,7 +128,7 @@
   </div>
 </main>
 <footer>
-  Les passages à masquer sont trouvés par un modèle indecis entraîné sur des données publiques et synthétiques : noms et identifiants, mais aussi quasi-identifiants (métier, lieu, date, proches, événements de vie) et données sensibles (santé, syndicat, convictions…). go-anon réécrit le document, vérifie le résultat et en retire les métadonnées, commentaires et révisions. Un contrôle humain reste nécessaire avant toute diffusion.
+  Les passages à masquer sont trouvés par un modèle indecis entraîné sur des données publiques et synthétiques : noms et identifiants, mais aussi quasi-identifiants (métier, lieu, date, proches, événements de vie) et données sensibles (santé, syndicat, convictions…). go-anon réécrit le document, vérifie le résultat et en retire les métadonnées, commentaires et révisions. Un contrôle humain reste nécessaire avant toute diffusion. Code source : <a href="https://github.com/Bornholm/indecis-caviardage">github.com/Bornholm/indecis-caviardage</a>.
 </footer>
 <script>
 const $ = (id) => document.getElementById(id);

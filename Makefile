@@ -1,4 +1,4 @@
-# Caviardage RGPD de documents Word et ODT, avec indecis et go-anon.
+# Caviardage de données personnelles dans des documents Word et ODT, avec indecis et go-anon.
 #
 #   make run     compile et démarre sur http://127.0.0.1:8071
 #   make wasm    produit dans dist/ la version tout navigateur, en fichiers statiques
@@ -48,7 +48,7 @@ video:
 	(python3 -m http.server 8072 --bind 127.0.0.1 >/dev/null 2>&1 & echo $$! > .http.pid) && sleep 1 && \
 	rm -rf raw demo.webm && node record.js; kill $$(cat .http.pid); rm -f .http.pid
 	cd video && ffmpeg -y -loglevel error -i demo.webm -vf "subtitles=captions.srt:force_style='FontName=DejaVu Sans,FontSize=15,PrimaryColour=&H00FFFFFF,OutlineColour=&H90000000,BackColour=&H90000000,BorderStyle=3,Outline=6,Shadow=0,MarginV=18,Alignment=2'" \
-		-c:v libx264 -preset slow -crf 22 -pix_fmt yuv420p -movflags +faststart demo-caviardage-rgpd.mp4
+		-c:v libx264 -preset slow -crf 22 -pix_fmt yuv420p -movflags +faststart demo-caviardage.mp4
 
 clean:
 	rm -rf bin $(DIST)

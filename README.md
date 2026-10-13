@@ -1,6 +1,6 @@
 # indecis-caviardage
 
-Un démonstrateur de caviardage RGPD : on dépose un document Word ou OpenDocument, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
+Un démonstrateur de caviardage de données personnelles : on dépose un document Word ou OpenDocument, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
 
 La version tout navigateur est en ligne : https://bornholm.github.io/indecis-caviardage/
 
@@ -60,7 +60,7 @@ Sur un portable (Core Ultra 7 265U, modèle int8), dix pages A4 se traitent en 1
 
 ## Vidéo
 
-`make video`, le serveur démarré, enregistre une démonstration sous-titrée de 1 min 30 (`video/demo-caviardage-rgpd.mp4`) à partir du document fictif de `demo/`. Il faut Chromium, LibreOffice, Node et ffmpeg.
+`make video`, le serveur démarré, enregistre une démonstration sous-titrée de 1 min 30 (`video/demo-caviardage.mp4`) à partir du document fictif de `demo/`. Il faut Chromium, LibreOffice, Node et ffmpeg.
 
 ## Licence
 
