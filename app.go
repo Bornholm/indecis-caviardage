@@ -3,10 +3,10 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"mime"
@@ -23,12 +23,13 @@ import (
 	"github.com/bornholm/indecis"
 )
 
-// keep is how long a redacted document waits to be downloaded, in memory
-// only. It is deleted at its first download, or when it expires.
+// keep is how long a redacted document waits to be downloaded, in secret
+// memory. It is erased at its first download, or when it expires.
 const keep = 15 * time.Minute
 
-// tempPrefix names the directories a document is processed in: go-anon's
-// DOCX and ODT readers only read files.
+// tempPrefix names the directories a Word or ODT document is processed
+// in, for the time of its processing: go-anon's DOCX and ODT readers only
+// read files. A CSV file stays in secret memory.
 const tempPrefix = "caviardage-"
 
 // tempRoot is where documents are processed: /dev/shm, in memory, when it
@@ -72,19 +73,18 @@ type app struct {
 	admitted atomic.Int64
 	limit    int64
 
-	tmp     string // see tempRoot
-	results string // the documents waiting for their download
+	tmp string // see tempRoot
 
 	mu    sync.Mutex
 	files map[string]result
 }
 
-// result is a redacted document waiting for its download, in a file of
-// the results directory: outside Go's memory, which would hold it until
-// a collection and could not overwrite it reliably.
+// result is a redacted document waiting for its download, in secret
+// memory (see secret).
 type result struct {
-	name, path string
-	expires    time.Time
+	name    string
+	data    *secret
+	expires time.Time
 }
 
 func newApp(models []*indecis.Model, queue int, log *slog.Logger, maxSize int64) (*app, error) {
@@ -95,10 +95,6 @@ func newApp(models []*indecis.Model, queue int, log *slog.Logger, maxSize int64)
 	}
 	if n := cleanTemp(a.tmp); n > 0 {
 		log.Info("removed processing directories left by a previous run", "count", n)
-	}
-	var err error
-	if a.results, err = os.MkdirTemp(a.tmp, tempPrefix+"results-"); err != nil {
-		return nil, err
 	}
 	go func() {
 		for range time.Tick(time.Minute) {
@@ -115,7 +111,7 @@ func (a *app) purge() {
 	now := time.Now()
 	for k, v := range a.files {
 		if now.After(v.expires) {
-			erase(v.path)
+			v.data.Close()
 			delete(a.files, k)
 		}
 	}
@@ -123,6 +119,7 @@ func (a *app) purge() {
 
 // erase overwrites a file with zeros, then removes it: in /dev/shm, its
 // bytes would otherwise stay in memory until the pages are reused.
+// os.RemoveAll would only unlink it.
 func erase(path string) {
 	if f, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
 		if st, err := f.Stat(); err == nil {
@@ -142,10 +139,10 @@ func (zeros) Read(p []byte) (int, error) {
 
 // redact processes the document of a multipart form, its fields bias
 // and strategy in any order. The parts are read as they arrive, the
-// document written straight into the processing directory: parsing the
-// form would put a large document in the system's temporary directory,
-// on disk. With ?progress, the response is a stream of JSON lines: the
-// progress of a CSV file, then the result or the error.
+// document copied straight into secret memory, where it waits for a
+// model: parsing the form would put a large document in the system's
+// temporary directory, on disk. With ?progress, the response is a stream
+// of JSON lines: the progress of a CSV file, then the result or the error.
 func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 	if a.admitted.Add(1) > a.limit {
 		a.admitted.Add(-1)
@@ -159,14 +156,9 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "formulaire attendu")
 		return
 	}
-	dir, err := os.MkdirTemp(a.tmp, tempPrefix)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer os.RemoveAll(dir) // the document never stays on disk
-	var filename, ext, in string
-	var size int64
+	doc := &secret{}
+	defer doc.Close()
+	var filename, ext string
 	fields := map[string]string{}
 	for {
 		part, err := mr.NextPart()
@@ -187,18 +179,16 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "format non pris en charge : Word (.docx), OpenDocument (.odt) ou CSV (.csv, .tsv)")
 			return
 		}
-		in = filepath.Join(dir, "in"+ext)
-		f, err := os.Create(in)
-		if err == nil {
-			size, err = io.Copy(f, part)
-			f.Close()
-		}
-		if err != nil {
+		if _, err := io.Copy(doc, part); errors.Is(err, errSecretFull) {
+			a.log.Warn("secret memory full: raise the locked-memory limit (LimitMEMLOCK)")
+			httpError(w, http.StatusServiceUnavailable, "le serveur n'a plus de mémoire protégée pour ce document : réessayez dans quelques minutes")
+			return
+		} else if err != nil {
 			httpError(w, http.StatusBadRequest, "document manquant ou trop volumineux")
 			return
 		}
 	}
-	if in == "" {
+	if filename == "" {
 		httpError(w, http.StatusBadRequest, "document manquant")
 		return
 	}
@@ -235,7 +225,6 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		httpError(w, code, msg)
 	}
 
-	out := filepath.Join(dir, "out"+ext)
 	var m *indecis.Model
 	select {
 	case m = <-a.models:
@@ -250,15 +239,24 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	start := time.Now()
+	out := &secret{}
 	var res *response
 	if isCSV(ext) {
-		res, err = a.redactCSV(r.Context(), m, in, out, ext, size, bias, strategy, progress)
+		res, err = processCSV(r.Context(), m, doc.Reader(), out, ext, doc.Size(), bias, strategy, progress)
 	} else {
-		res, err = process(m, walkers[ext], in, out, bias, strategy)
+		res, err = a.redactFile(m, doc, out, ext, bias, strategy)
 	}
 	elapsed := time.Since(start)
 	a.models <- m
+	doc.Close() // the original is no longer needed
+	if errors.Is(err, errSecretFull) {
+		out.Close()
+		a.log.Warn("secret memory full: raise the locked-memory limit (LimitMEMLOCK)")
+		fail(http.StatusServiceUnavailable, "le serveur n'a plus de mémoire protégée pour ce document : réessayez dans quelques minutes")
+		return
+	}
 	if err != nil {
+		out.Close()
 		a.log.Error("redaction", "format", ext, "error", err) // never the content
 		fail(http.StatusUnprocessableEntity, "le document n'a pas pu être traité : "+err.Error())
 		return
@@ -267,13 +265,9 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 	if strategy == anonymizer.TagReplace {
 		name = strings.TrimSuffix(filename, filepath.Ext(filename)) + "_pseudonymise" + ext
 	}
-	token, written, err := a.store(name, out)
-	if err != nil {
-		fail(http.StatusInternalServerError, err.Error())
-		return
-	}
+	token := a.store(name, out)
 	res.Name, res.Download, res.Seconds = name, "/api/download/"+token, elapsed.Seconds()
-	a.log.Info("document redacted", "format", ext, "bytes", written, "elements", len(res.Elements), "duration", elapsed.Round(time.Millisecond))
+	a.log.Info("document redacted", "format", ext, "bytes", out.Size(), "elements", len(res.Elements), "duration", elapsed.Round(time.Millisecond))
 	if send != nil {
 		send(map[string]any{"result": res})
 		return
@@ -282,44 +276,57 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(res)
 }
 
-// redactCSV redacts a CSV file from one file to the other, as a stream.
-func (a *app) redactCSV(ctx context.Context, m *indecis.Model, in, out, ext string, size int64, bias float64, strategy anonymizer.Strategy, progress func(done, total int64)) (*response, error) {
-	src, err := os.Open(in)
+// redactFile redacts a Word or ODT document through files, which
+// go-anon's readers need: they exist in /dev/shm for the time of the
+// processing only, then are overwritten with zeros.
+func (a *app) redactFile(m *indecis.Model, doc, out *secret, ext string, bias float64, strategy anonymizer.Strategy) (*response, error) {
+	dir, err := os.MkdirTemp(a.tmp, tempPrefix)
 	if err != nil {
 		return nil, err
 	}
-	defer src.Close()
-	dst, err := os.Create(out)
+	in, produced := filepath.Join(dir, "in"+ext), filepath.Join(dir, "out"+ext)
+	defer func() {
+		erase(in)
+		erase(produced)
+		os.RemoveAll(dir)
+	}()
+	f, err := os.OpenFile(in, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	res, err := processCSV(ctx, m, src, dst, ext, size, bias, strategy, progress)
-	if cerr := dst.Close(); err == nil {
+	_, err = io.Copy(f, doc.Reader())
+	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	return res, err
+	if err != nil {
+		return nil, err
+	}
+	res, err := process(m, walkers[ext], in, produced, bias, strategy)
+	if err != nil {
+		return nil, err
+	}
+	g, err := os.Open(produced)
+	if err != nil {
+		return nil, err
+	}
+	defer g.Close()
+	if _, err := io.Copy(out, g); err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
-// store moves the document produced to the results directory, on the
-// same file system, and returns the token of its download and its size.
-func (a *app) store(name, out string) (string, int64, error) {
+// store keeps the document produced until its download and returns the
+// token of the download.
+func (a *app) store(name string, data *secret) string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
-	path := filepath.Join(a.results, token)
-	if err := os.Rename(out, path); err != nil {
-		return "", 0, err
-	}
-	st, err := os.Stat(path)
-	if err != nil {
-		erase(path)
-		return "", 0, err
-	}
 	a.purge()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.files[token] = result{name: name, path: path, expires: time.Now().Add(keep)}
-	return token, st.Size(), nil
+	a.files[token] = result{name: name, data: data, expires: time.Now().Add(keep)}
+	return token
 }
 
 func (a *app) download(w http.ResponseWriter, r *http.Request) {
@@ -329,25 +336,20 @@ func (a *app) download(w http.ResponseWriter, r *http.Request) {
 	delete(a.files, r.PathValue("token"))
 	a.mu.Unlock()
 	if ok {
-		defer erase(res.path)
+		defer res.data.Close()
 	}
 	if !ok || time.Now().After(res.expires) {
 		http.Error(w, "document déjà téléchargé ou expiré : recommencez", http.StatusNotFound)
 		return
 	}
-	f, err := os.Open(res.path)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
 	ctype := mime.TypeByExtension(filepath.Ext(res.name))
 	if ctype == "" {
 		ctype = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": res.name}))
-	io.Copy(w, f)
+	w.Header().Set("Content-Length", strconv.FormatInt(res.data.Size(), 10))
+	io.Copy(w, res.data.Reader())
 }
 
 func httpError(w http.ResponseWriter, code int, msg string) {

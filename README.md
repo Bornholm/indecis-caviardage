@@ -15,8 +15,11 @@ make run MODEL=model
 
 ## Ce que le serveur garde, et combien de temps
 
-- Le document reçu et le document produit sont écrits pendant le traitement dans un dossier de `/dev/shm`. Le formulaire est lu au fil de l'envoi : un gros fichier ne passe pas par le répertoire temporaire du système, contrairement au traitement standard des formulaires en Go, qui l'écrirait sur disque au-delà de 32 Mo, en mémoire, jamais sur disque quand ce répertoire existe ; le dossier est supprimé à la fin de la requête, et au démarrage si un arrêt brutal l'avait laissé.
-- Le document caviardé attend son téléchargement dans un fichier du même répertoire en mémoire, hors du tas de Go, au plus 15 minutes. Il est effacé dès le premier téléchargement, ou à son expiration (purge chaque minute) : ses octets sont remplacés par des zéros, puis le fichier supprimé.
+- Le document reçu attend son traitement, et le document produit son téléchargement, en **mémoire secrète** (`memfd_secret`, Linux 5.14 et plus) : des pages retirées de la projection du noyau, qu'aucun autre processus ne peut lire, root compris (ni `/proc/<pid>/mem`, ni ptrace), qui ne vont jamais en swap et restent hors des core dumps. Le formulaire est lu au fil de l'envoi et le document copié directement en mémoire secrète : il ne passe pas par le répertoire temporaire du système, où le traitement standard des formulaires en Go l'écrirait au-delà de 32 Mo.
+- Un CSV est lu et écrit en mémoire secrète. Les lecteurs Word et ODT de go-anon ne lisant que des fichiers, un document Word ou ODT est copié pendant son traitement seulement dans un dossier de `/dev/shm` (en mémoire, jamais sur disque quand ce répertoire existe) ; ses fichiers sont ensuite remplis de zéros puis supprimés, et le dossier l'est aussi au démarrage si un arrêt brutal l'avait laissé.
+- Le document produit attend son téléchargement au plus 15 minutes. Il est effacé dès le premier téléchargement, ou à son expiration (purge chaque minute) : sa mémoire est remplie de zéros, puis rendue.
+- Pendant son traitement, le texte d'un document passe aussi dans la mémoire de Go, qui ne peut pas être secrète. Le processus se déclare donc non inspectable (`PR_SET_DUMPABLE=0`) : pas de core dump, et ni ptrace ni `/proc/<pid>/mem` pour les autres processus du même utilisateur ; root, lui, y garde accès.
+- Ce que la mémoire secrète ne couvre pas : le processus lui-même s'il est compromis, et l'hyperviseur d'une machine virtuelle, qui lit la mémoire de l'invité.
 - La liste des éléments masqués, qui contient les valeurs d'origine, est envoyée au navigateur pour l'affichage ; le serveur ne la garde pas.
 - Les journaux ne portent que le format, la taille, le nombre d'éléments et la durée, jamais de contenu.
 - Go ne remet pas à zéro la mémoire qu'il libère : des fragments peuvent subsister dans le processus tant qu'elle n'est pas réutilisée. Arrêter le serveur après usage les efface.
@@ -24,6 +27,8 @@ make run MODEL=model
 ```bash
 make run    # http://127.0.0.1:8071
 ```
+
+Le serveur refuse de démarrer sans mémoire secrète. Elle se décompte de la limite de mémoire verrouillée (`RLIMIT_MEMLOCK`), souvent de 8 Mo seulement : à relever en production, à hauteur des documents en attente et en cours, chacun avec son résultat (un CSV produit fait environ 1,5 fois l'original). Par exemple, pour `-max-size` de 200 Mo, 2 instances et une file de 8 : `LimitMEMLOCK=5G` dans l'unité systemd, ou `--ulimit memlock=5368709120` pour un conteneur. Le serveur avertit au démarrage si la limite ne tient pas un document de `-max-size`, et répond 503 à un document qui la dépasserait.
 
 1. Déposer un fichier `.docx`, `.odt`, `.csv` ou `.tsv`.
 2. Régler la **prudence** : plus elle est haute, moins il reste de données lisibles, et plus il y a de masques superflus. À 5, environ 2 % des passages personnels restaient exposés dans nos tests en prose ; à 6, environ 1 %.

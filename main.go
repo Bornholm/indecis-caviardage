@@ -45,6 +45,22 @@ func main() {
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
+	// The documents wait in secret memory; while processed, they are also
+	// in Go's memory, which no other process may read nor dump.
+	if err := protectProcess(); err != nil {
+		log.Error("protecting the process", "error", err)
+		os.Exit(1)
+	}
+	memlock, err := checkSecret()
+	if err != nil {
+		log.Error("secret memory (memfd_secret) is unavailable: the server does not keep documents in readable memory", "error", err)
+		os.Exit(1)
+	}
+	log.Info("secret memory available", "locked-memory limit MiB", memlock>>20)
+	if memlock < 2*uint64(*maxSize) {
+		log.Warn("the locked-memory limit holds less than one document of -max-size and its result: raise it (LimitMEMLOCK=, ulimit -l) or larger documents will be refused", "max-size MiB", *maxSize>>20)
+	}
+
 	start := time.Now()
 	models := make([]*indecis.Model, max(*workers, 1))
 	for i := range models {
