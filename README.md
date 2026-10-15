@@ -1,6 +1,6 @@
 # indecis-caviardage
 
-Un démonstrateur de caviardage de données personnelles : on dépose un document Word ou OpenDocument, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
+Un démonstrateur de caviardage de données personnelles : on dépose un document Word ou OpenDocument, ou un fichier CSV, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
 
 La version tout navigateur est en ligne : https://bornholm.github.io/indecis-caviardage/
 
@@ -15,7 +15,7 @@ make run MODEL=model
 
 ## Ce que le serveur garde, et combien de temps
 
-- Le document reçu et le document produit sont écrits pendant le traitement dans un dossier de `/dev/shm`, en mémoire, jamais sur disque quand ce répertoire existe ; le dossier est supprimé à la fin de la requête, et au démarrage si un arrêt brutal l'avait laissé.
+- Le document reçu et le document produit sont écrits pendant le traitement dans un dossier de `/dev/shm`. Le formulaire est lu au fil de l'envoi : un gros fichier ne passe pas par le répertoire temporaire du système, contrairement au traitement standard des formulaires en Go, qui l'écrirait sur disque au-delà de 32 Mo, en mémoire, jamais sur disque quand ce répertoire existe ; le dossier est supprimé à la fin de la requête, et au démarrage si un arrêt brutal l'avait laissé.
 - Le document caviardé attend son téléchargement en mémoire, au plus 15 minutes. Il est supprimé dès le premier téléchargement, ou à son expiration (purge chaque minute), ses octets effacés.
 - La liste des éléments masqués, qui contient les valeurs d'origine, est envoyée au navigateur pour l'affichage ; le serveur ne la garde pas.
 - Les journaux ne portent que le format, la taille, le nombre d'éléments et la durée, jamais de contenu.
@@ -25,7 +25,7 @@ make run MODEL=model
 make run    # http://127.0.0.1:8071
 ```
 
-1. Déposer un fichier `.docx` ou `.odt`.
+1. Déposer un fichier `.docx`, `.odt`, `.csv` ou `.tsv`.
 2. Régler la **prudence** : plus elle est haute, moins il reste de données lisibles, et plus il y a de masques superflus. À 5, environ 2 % des passages personnels restaient exposés dans nos tests en prose ; à 6, environ 1 %.
 3. Choisir entre le **caviardage** (██████, irréversible) et la **pseudonymisation** (⟦PERSON_1⟧ : une même personne garde le même pseudonyme dans tout le document).
 4. Télécharger le document produit, et parcourir la liste des éléments masqués : type, contexte, nombre d'occurrences, et catégorie sensible (santé, syndicat, convictions, origine, opinions politiques, vie sexuelle, infractions).
@@ -57,6 +57,20 @@ Sur un portable (Core Ultra 7 265U, modèle int8), dix pages A4 se traitent en 1
 - La catégorie sensible d'un passage est indicative : le masquage est fiable, la catégorisation beaucoup moins.
 - go-anon réunit les lignes d'un même paragraphe séparées par des sauts de ligne simples : « Chalon-sur-Saône » et « Date » à la ligne suivante deviennent « Chalon-sur-SaôneDate ». Les paragraphes distincts ne sont pas concernés.
 - Pas de PDF dans ce démonstrateur, bien que go-anon les traite.
+
+## Fichiers CSV
+
+Un fichier CSV ou TSV peut peser plusieurs dizaines de mégaoctets. Il est lu et écrit au fil de l'eau par le `csv.Stream` de go-anon, par lots d'environ 64 ko de texte : la mémoire ne dépend pas de la taille du fichier. `csv.go` y ajoute ce qui tient au modèle, qui lit sinon le document entier d'un seul tenant.
+
+- Le séparateur (virgule, point-virgule, tabulation), le BOM et les fins de ligne CRLF sont conservés. Le guillemetage peut changer : Go ne met des guillemets qu'aux cellules qui en ont besoin.
+- Le modèle lit chaque ligne comme des lignes « colonne : valeur ». Ainsi « 06 12 34 56 78 » se lit sous « téléphone », et pas seul. Il lit les lignes d'un lot ensemble, en fenêtres réparties sur les cœurs.
+- La première ligne est prise pour un en-tête, gardée telle quelle, quand ses cellules sont courtes, distinctes et non vides, et qu'une colonne a des chiffres ou un « @ » dans la deuxième ligne mais pas dans la première (`csv.LooksLikeHeader` de go-anon). Sinon, elle est caviardée comme les autres : un en-tête sans colonne chiffrée est alors masqué, plutôt que de risquer de laisser passer une ligne de données.
+- Une cellule déjà lue sous la même colonne reprend ce qui y a été trouvé la première fois, sans repasser par le modèle (jusqu'à 200 000 cellules distinctes). Les villes, les catégories et les commentaires récurrents ne coûtent donc qu'une fois.
+- La vérification se fait cellule par cellule : formes déjà remplacées, identifiants par expressions régulières. Le modèle ne relit pas le fichier produit, ce qui doublerait la durée.
+- La page liste les 2 000 éléments les plus fréquents. Les comptes portent sur tout le fichier.
+- La page affiche la progression et le temps restant. Côté serveur, ce sont les lignes JSON de `/api/redact?progress` ; sans `?progress`, la réponse reste un seul objet JSON.
+
+Le débit dépend du modèle, qui lit chaque cellule. Sur le portable cité plus haut, un CSV synthétique de clients (`demo/clients.csv`, avec nom, courriel, téléphone, date et commentaire, presque toutes les valeurs différentes) se traite à environ 27 ko/s : 160 000 lignes (20 Mo) en 13 min, avec 1 Go de mémoire au plus, modèle compris. La mémoire cesse de croître une fois atteints les plafonds de la liste et du cache. Il faut donc compter environ 50 min pour 80 Mo. Dans le navigateur, sur un seul cœur, c'est dix fois plus lent au moins : la version en ligne convient à des fichiers de quelques mégaoctets. Le serveur traite un document à la fois : un gros CSV fait attendre les suivants, et la page l'indique.
 
 ## Vidéo
 

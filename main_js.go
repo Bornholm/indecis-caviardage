@@ -9,6 +9,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -38,8 +40,8 @@ func main() {
 	debug.FreeOSMemory()
 
 	self.Set("caviarder", js.FuncOf(func(_ js.Value, args []js.Value) any {
-		name, data, bias, strategy := args[0].String(), args[1], args[2].Float(), args[3].String()
-		return promise(func() (any, error) { return redactBytes(m, name, data, bias, strategy) })
+		name, data, bias, strategy, progress := args[0].String(), args[1], args[2].Float(), args[3].String(), args[4]
+		return promise(func() (any, error) { return redactBytes(m, name, data, bias, strategy, progress) })
 	}))
 	h := indecis.DetectHardware()
 	self.Call("onGoReady", map[string]any{
@@ -52,16 +54,20 @@ func main() {
 }
 
 // redactBytes redacts a document given as a Uint8Array and returns the
-// page's response as JSON with the document produced.
-func redactBytes(m *indecis.Model, name string, data js.Value, bias float64, strategy string) (any, error) {
+// page's response as JSON with the document produced. A CSV file is read
+// and written as a stream, progress receiving the bytes read so far.
+func redactBytes(m *indecis.Model, name string, data js.Value, bias float64, strategy string, progress js.Value) (any, error) {
 	ext := strings.ToLower(filepath.Ext(name))
 	open, ok := walkers[ext]
-	if !ok {
-		return nil, fmt.Errorf("format non pris en charge : Word (.docx) ou OpenDocument (.odt)")
+	if !ok && !isCSV(ext) {
+		return nil, fmt.Errorf("format non pris en charge : Word (.docx), OpenDocument (.odt) ou CSV (.csv, .tsv)")
 	}
 	strat := anonymizer.Redact
 	if strategy == "tag" {
 		strat = anonymizer.TagReplace
+	}
+	if isCSV(ext) {
+		return redactCSVBytes(m, name, ext, data, bias, strat, progress)
 	}
 	dir, err := os.MkdirTemp("", "caviardage-")
 	if err != nil {
@@ -83,13 +89,40 @@ func redactBytes(m *indecis.Model, name string, data js.Value, bias float64, str
 		return nil, fmt.Errorf("le document n'a pas pu être traité : %w", err)
 	}
 	res.Seconds = time.Since(start).Seconds()
-	res.Name = strings.TrimSuffix(name, filepath.Ext(name)) + "_caviarde" + ext
-	if strat == anonymizer.TagReplace {
-		res.Name = strings.TrimSuffix(name, filepath.Ext(name)) + "_pseudonymise" + ext
-	}
 	produced, err := os.ReadFile(out)
 	if err != nil {
 		return nil, err
+	}
+	return reply(res, name, ext, strat, produced)
+}
+
+// redactCSVBytes redacts a CSV file outside the in-memory file system:
+// it would hold the file once more.
+func redactCSVBytes(m *indecis.Model, name, ext string, data js.Value, bias float64, strat anonymizer.Strategy, progress js.Value) (any, error) {
+	b := make([]byte, data.Length())
+	js.CopyBytesToGo(b, data)
+	defer clear(b)
+	var out bytes.Buffer
+	out.Grow(len(b) + len(b)/8)
+	start := time.Now()
+	res, err := processCSV(context.Background(), m, bytes.NewReader(b), &out, ext, int64(len(b)), bias, strat, func(done, total int64) {
+		if progress.Type() == js.TypeFunction {
+			progress.Invoke(float64(done), float64(total))
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("le document n'a pas pu être traité : %w", err)
+	}
+	res.Seconds = time.Since(start).Seconds()
+	return reply(res, name, ext, strat, out.Bytes())
+}
+
+// reply names the document produced and hands it to JavaScript with the
+// response, then clears Go's copy.
+func reply(res *response, name, ext string, strat anonymizer.Strategy, produced []byte) (any, error) {
+	res.Name = strings.TrimSuffix(name, filepath.Ext(name)) + "_caviarde" + ext
+	if strat == anonymizer.TagReplace {
+		res.Name = strings.TrimSuffix(name, filepath.Ext(name)) + "_pseudonymise" + ext
 	}
 	doc := js.Global().Get("Uint8Array").New(len(produced))
 	js.CopyBytesToJS(doc, produced)

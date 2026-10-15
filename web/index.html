@@ -95,11 +95,13 @@
       <h2>1. Document</h2>
       <label class="drop" id="drop">
         <strong id="fname">Déposer un document ici</strong>
-        <span id="fhint">ou cliquer pour choisir un fichier Word (.docx) ou OpenDocument (.odt)</span>
-        <input type="file" id="file" accept=".docx,.odt">
+        <span id="fhint">ou cliquer pour choisir un fichier Word (.docx), OpenDocument (.odt) ou CSV (.csv, .tsv)</span>
+        <input type="file" id="file" accept=".docx,.odt,.csv,.tsv">
       </label>
       <p class="note">Pour essayer : un compte rendu d'entretien fictif, à télécharger puis déposer ci-dessus,
-        en <a href="demo/compte-rendu.docx" download>Word</a> ou en <a href="demo/compte-rendu.odt" download>OpenDocument</a>.</p>
+        en <a href="demo/compte-rendu.docx" download>Word</a> ou en <a href="demo/compte-rendu.odt" download>OpenDocument</a> ;
+        ou un fichier de <a href="demo/clients.csv" download>clients fictifs</a> en CSV.</p>
+      <p class="note">Un CSV est lu ligne à ligne, sans limite de taille pratique, mais le modèle lit chaque cellule : comptez quelques dizaines de ko par seconde avec le serveur.</p>
     </section>
     <section>
       <h2>2. Réglages</h2>
@@ -167,15 +169,15 @@ if (LOCAL) startLocal();
 
 function choose(f) {
   if (!f) return;
-  if (!/\.(docx|odt)$/i.test(f.name)) {
+  if (!/\.(docx|odt|csv|tsv)$/i.test(f.name)) {
     $("fname").textContent = "Format non pris en charge";
-    $("fhint").textContent = "Word (.docx) ou OpenDocument (.odt)";
+    $("fhint").textContent = "Word (.docx), OpenDocument (.odt) ou CSV (.csv, .tsv)";
     file = null; $("go").disabled = true;
     return;
   }
   file = f;
   $("fname").textContent = f.name;
-  $("fhint").textContent = Math.max(1, Math.round(f.size / 1024)) + " ko · cliquer pour en choisir un autre";
+  $("fhint").textContent = size(f.size) + " · cliquer pour en choisir un autre";
   $("go").disabled = !modelReady;
 }
 
@@ -204,6 +206,9 @@ function startLocal() {
       $("go").disabled = !file;
     } else if (m.type === "error") {
       $("mstatus").replaceChildren(el("span", "error", "Échec du chargement : " + m.message));
+    } else if (m.type === "work") {
+      const p = pending.get(m.id);
+      if (p && p.progress) p.progress(m.done, m.total);
     } else if (m.type === "result") {
       const p = pending.get(m.id);
       pending.delete(m.id);
@@ -239,16 +244,54 @@ function showHardware(h) {
 
 // redactLocal hands the document to the worker; the document produced
 // comes back as a Blob to download.
-async function redactLocal(f, bias, strategy) {
+async function redactLocal(f, bias, strategy, progress) {
   const bytes = await f.arrayBuffer();
   const id = nextId++;
   const m = await new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve, reject, progress });
     worker.postMessage({ id, name: f.name, bytes, bias: Number(bias), strategy }, [bytes]);
   });
   if (result && result.download.startsWith("blob:")) URL.revokeObjectURL(result.download);
   m.response.download = URL.createObjectURL(new Blob([m.document], { type: f.type || "application/octet-stream" }));
   return m.response;
+}
+
+// redactServer sends the document to the server, which answers with JSON
+// lines: the progress of a CSV file, then the result or the error.
+async function redactServer(f, bias, strategy, progress, queued) {
+  const form = new FormData();
+  form.append("bias", bias);
+  form.append("strategy", strategy);
+  form.append("document", f);
+  const r = await fetch("/api/redact?progress", { method: "POST", body: form });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(body.error || r.statusText);
+  }
+  const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buf += value;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const m = JSON.parse(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+      if (m.error) throw new Error(m.error);
+      if (m.result) return m.result;
+      if (m.progress) progress(m.progress.done, m.progress.total);
+      if (m.queued) queued();
+    }
+    if (done) throw new Error("réponse interrompue");
+  }
+}
+
+function size(n) {
+  return n < 2 ** 20 ? Math.max(1, Math.round(n / 1024)) + " ko" : (n / 2 ** 20).toFixed(1).replace(".", ",") + " Mo";
+}
+
+function duration(s) {
+  return s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1).replace(".", ",") + " h";
 }
 
 function showBias() {
@@ -260,24 +303,34 @@ async function run() {
   if (!file) return;
   $("go").disabled = true;
   const t0 = performance.now();
-  $("out").innerHTML = '<div class="busy"><div class="spin"></div><span id="elapsed">Analyse du document…</span></div>';
+  $("out").innerHTML = '<div class="busy"><div class="spin"></div><span id="elapsed">Analyse du document…</span></div>' +
+    '<progress id="work" max="1" value="0" hidden></progress>';
+  // The progress of a CSV file: the share read, and the time left at the
+  // pace since the first batch.
+  let status = "Analyse du document…", first = null;
+  const progress = (done, total) => {
+    const now = performance.now();
+    if (first === null) first = { at: now, done };
+    const bar = $("work");
+    bar.hidden = false;
+    bar.value = done / total;
+    status = "Analyse du fichier… " + size(done) + " / " + size(total);
+    if (done > first.done && done < total) {
+      status += " · reste environ " + duration((total - done) * (now - first.at) / (done - first.done) / 1000);
+    }
+  };
+  const queued = () => { status = "En attente : le serveur traite un autre document…"; };
   const tick = setInterval(() => {
     const e = $("elapsed");
-    if (e) e.textContent = "Analyse du document… " + ((performance.now() - t0) / 1000).toFixed(0) + " s";
+    if (e) e.textContent = status + " · " + duration((performance.now() - t0) / 1000) + " écoulées";
   }, 500);
   const strategy = document.querySelector("input[name=mode]:checked").value;
   try {
     let body;
     if (LOCAL) {
-      body = await redactLocal(file, $("bias").value, strategy);
+      body = await redactLocal(file, $("bias").value, strategy, progress);
     } else {
-      const form = new FormData();
-      form.append("document", file);
-      form.append("bias", $("bias").value);
-      form.append("strategy", strategy);
-      const r = await fetch("/api/redact", { method: "POST", body: form });
-      body = await r.json().catch(() => ({ error: r.statusText }));
-      if (!r.ok) throw new Error(body.error || r.statusText);
+      body = await redactServer(file, $("bias").value, strategy, progress, queued);
     }
     result = body; filter = null;
     render();
@@ -323,9 +376,10 @@ function render() {
   });
   if (result.downloaded) { dl.textContent = "Téléchargé, supprimé du serveur"; dl.removeAttribute("href"); dl.style.opacity = ".5"; }
   sum.append(
-    stat(items.length, "éléments distincts masqués"),
+    stat(result.distinct || items.length, "éléments distincts masqués"),
     stat(items.filter((x) => x.sensitive).length, "données sensibles"),
-    stat(result.seconds.toFixed(1) + " s", result.replaced + " remplacements"),
+    stat(result.seconds < 90 ? result.seconds.toFixed(1) + " s" : duration(result.seconds),
+      result.replaced + " remplacements" + (result.rows ? " · " + result.rows + " lignes" : "")),
     dl);
   out.append(sum);
   for (const w of result.warnings || []) out.append(el("div", "warn", "⚠ " + w));

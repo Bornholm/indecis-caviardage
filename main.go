@@ -1,7 +1,7 @@
 //go:build !js
 
-// Command indecis-caviardage redacts the personal data of Word and ODT
-// documents in a browser page, and lists what it redacted. Everything
+// Command indecis-caviardage redacts the personal data of Word, ODT and
+// CSV documents in a browser page, and lists what it redacted. Everything
 // runs on this machine, on CPU: an indecis model finds the passages to
 // mask, direct and indirect identifiers and special categories of data
 // (github.com/bornholm/indecis-ner), and go-anon rewrites the document,
@@ -30,16 +30,16 @@ import (
 //go:embed web
 var web embed.FS
 
-// demo holds the fictitious document the page offers to try.
+// demo holds the fictitious documents the page offers to try.
 //
-//go:embed demo/compte-rendu.docx demo/compte-rendu.odt
+//go:embed demo/compte-rendu.docx demo/compte-rendu.odt demo/clients.csv
 var demo embed.FS
 
 func main() {
 	model := flag.String("model", "../indecis-ner/runs/work-fam", "indecis masking model (mask and sensitive questions)")
 	addr := flag.String("addr", "127.0.0.1:8071", "listen address")
 	threads := flag.Int("threads", 0, "cores per document (0: all)")
-	maxSize := flag.Int64("max-size", 30<<20, "largest document accepted, in bytes")
+	maxSize := flag.Int64("max-size", 200<<20, "largest document accepted, in bytes")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 

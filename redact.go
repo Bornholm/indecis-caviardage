@@ -11,7 +11,6 @@ import (
 	"github.com/bornholm/go-anon/pkg/anonymizer"
 	"github.com/bornholm/go-anon/pkg/docprocessor"
 	pkgdocx "github.com/bornholm/go-anon/pkg/docx"
-	"github.com/bornholm/go-anon/pkg/ner"
 	pkgodt "github.com/bornholm/go-anon/pkg/odt"
 	"github.com/bornholm/indecis"
 	"github.com/bornholm/indecis-ner/recognizer"
@@ -38,7 +37,11 @@ type response struct {
 	Elements []element `json:"elements"`
 	Replaced int       `json:"replaced"`
 	Seconds  float64   `json:"seconds"`
-	Warnings []string  `json:"warnings,omitempty"`
+	// Distinct and Rows are set for CSV files, whose list is cut to the
+	// most frequent elements.
+	Distinct int      `json:"distinct,omitempty"`
+	Rows     int      `json:"rows,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 	// Redetected lists what go-anon's verification found again in the
 	// output, outside the replaced passages: to check by eye.
 	Redetected []element `json:"redetected,omitempty"`
@@ -50,10 +53,7 @@ type response struct {
 // what was replaced, with its type. In redaction mode, a second pass over
 // the document turns the placeholders into blocks.
 func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), in, out string, bias float64, strategy anonymizer.Strategy) (*response, error) {
-	m.SetSpanBias("mask", bias)
-	m.SetSpanBias("sensitive", bias)
-	rec := recognizer.New(m, []string{"mask", "sensitive"},
-		ner.RegexEntityFilter(ner.BuiltinRegexPatterns), ner.RegexEntityFilter(ner.SecretPatterns()))
+	rec := newRecognizer(m, bias)
 	sensitive := map[string]string{} // original text -> special category
 	rec.OnFound = func(_ string, found []recognizer.Found) {
 		for _, f := range found {

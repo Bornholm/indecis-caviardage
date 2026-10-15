@@ -1,4 +1,4 @@
-# Caviardage de données personnelles dans des documents Word et ODT, avec indecis et go-anon.
+# Caviardage de données personnelles dans des documents Word, ODT et CSV, avec indecis et go-anon.
 #
 #   make run     compile et démarre sur http://127.0.0.1:8071
 #   make wasm    produit dans dist/ la version tout navigateur, en fichiers statiques
@@ -29,7 +29,7 @@ wasm:
 	GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -o $(DIST)/caviardage.wasm .
 	GOEXPERIMENT= GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -o $(DIST)/caviardage-nosimd.wasm .
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" wasm/worker.js wasm/memfs.js $(DIST)/
-	mkdir -p $(DIST)/demo && cp demo/compte-rendu.docx demo/compte-rendu.odt $(DIST)/demo/
+	mkdir -p $(DIST)/demo && cp demo/compte-rendu.docx demo/compte-rendu.odt demo/clients.csv $(DIST)/demo/
 	sed 's/<meta name="mode" content="server">/<meta name="mode" content="local">/' web/index.html > $(DIST)/index.html
 	cd $(MODEL) && cp $(MODEL_FILES) $(CURDIR)/$(DIST)/model/
 	cd $(DIST)/model && python3 -c 'import hashlib, json, os, sys; f = sys.argv[1:]; h = hashlib.sha256(); [h.update(open(n, "rb").read()) for n in f]; print(json.dumps({"version": h.hexdigest()[:16], "files": [{"name": n, "size": os.path.getsize(n)} for n in f]}))' $(MODEL_FILES) > manifest.json

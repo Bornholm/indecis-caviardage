@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -103,70 +104,152 @@ func (a *app) purge() {
 	}
 }
 
+// redact processes the document of a multipart form, its fields bias
+// and strategy in any order. The parts are read as they arrive, the
+// document written straight into the processing directory: parsing the
+// form would put a large document in the system's temporary directory,
+// on disk. With ?progress, the response is a stream of JSON lines: the
+// progress of a CSV file, then the result or the error.
 func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, a.maxSize+1<<20)
-	file, header, err := r.FormFile("document")
+	mr, err := r.MultipartReader()
 	if err != nil {
-		httpError(w, http.StatusBadRequest, "document manquant ou trop volumineux")
+		httpError(w, http.StatusBadRequest, "formulaire attendu")
 		return
 	}
-	defer file.Close()
-	ext := strings.ToLower(filepath.Ext(header.Filename))
-	open, ok := walkers[ext]
-	if !ok {
-		httpError(w, http.StatusBadRequest, "format non pris en charge : Word (.docx) ou OpenDocument (.odt)")
-		return
-	}
-	bias, err := strconv.ParseFloat(r.FormValue("bias"), 64)
-	if err != nil || bias < 0 || bias > 10 {
-		bias = 5
-	}
-	strategy := anonymizer.Redact
-	if r.FormValue("strategy") == "tag" {
-		strategy = anonymizer.TagReplace
-	}
-
 	dir, err := os.MkdirTemp(a.tmp, tempPrefix)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer os.RemoveAll(dir) // the document never stays on disk
-	in, out := filepath.Join(dir, "in"+ext), filepath.Join(dir, "out"+ext)
-	f, err := os.Create(in)
-	if err == nil {
-		_, err = io.Copy(f, file)
-		f.Close()
+	var filename, ext, in string
+	var size int64
+	fields := map[string]string{}
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "document manquant ou trop volumineux")
+			return
+		}
+		if part.FormName() != "document" {
+			v, _ := io.ReadAll(io.LimitReader(part, 64))
+			fields[part.FormName()] = string(v)
+			continue
+		}
+		filename, ext = part.FileName(), strings.ToLower(filepath.Ext(part.FileName()))
+		if _, ok := walkers[ext]; !ok && !isCSV(ext) {
+			httpError(w, http.StatusBadRequest, "format non pris en charge : Word (.docx), OpenDocument (.odt) ou CSV (.csv, .tsv)")
+			return
+		}
+		in = filepath.Join(dir, "in"+ext)
+		f, err := os.Create(in)
+		if err == nil {
+			size, err = io.Copy(f, part)
+			f.Close()
+		}
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "document manquant ou trop volumineux")
+			return
+		}
 	}
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+	if in == "" {
+		httpError(w, http.StatusBadRequest, "document manquant")
 		return
 	}
+	bias, err := strconv.ParseFloat(fields["bias"], 64)
+	if err != nil || bias < 0 || bias > 10 {
+		bias = 5
+	}
+	strategy := anonymizer.Redact
+	if fields["strategy"] == "tag" {
+		strategy = anonymizer.TagReplace
+	}
 
-	a.work.Lock()
+	var send func(any)
+	if r.URL.Query().Has("progress") {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		rc := http.NewResponseController(w)
+		enc := json.NewEncoder(w)
+		send = func(v any) {
+			enc.Encode(v)
+			rc.Flush()
+		}
+	}
+	var progress func(done, total int64)
+	if send != nil {
+		progress = func(done, total int64) {
+			send(map[string]any{"progress": map[string]int64{"done": done, "total": total}})
+		}
+	}
+	fail := func(code int, msg string) {
+		if send != nil {
+			send(map[string]string{"error": msg})
+			return
+		}
+		httpError(w, code, msg)
+	}
+
+	out := filepath.Join(dir, "out"+ext)
+	if !a.work.TryLock() {
+		if send != nil {
+			send(map[string]bool{"queued": true})
+		}
+		a.work.Lock()
+	}
 	start := time.Now()
-	res, err := process(a.m, open, in, out, bias, strategy)
+	var res *response
+	if isCSV(ext) {
+		res, err = a.redactCSV(r.Context(), in, out, ext, size, bias, strategy, progress)
+	} else {
+		res, err = process(a.m, walkers[ext], in, out, bias, strategy)
+	}
 	elapsed := time.Since(start)
 	a.work.Unlock()
 	if err != nil {
-		a.log.Error("redaction", "error", err) // never the content
-		httpError(w, http.StatusUnprocessableEntity, "le document n'a pas pu être traité : "+err.Error())
+		a.log.Error("redaction", "format", ext, "error", err) // never the content
+		fail(http.StatusUnprocessableEntity, "le document n'a pas pu être traité : "+err.Error())
 		return
 	}
 	data, err := os.ReadFile(out)
 	if err != nil {
-		httpError(w, http.StatusInternalServerError, err.Error())
+		fail(http.StatusInternalServerError, err.Error())
 		return
 	}
-	name := strings.TrimSuffix(header.Filename, ext) + "_caviarde" + ext
+	name := strings.TrimSuffix(filename, filepath.Ext(filename)) + "_caviarde" + ext
 	if strategy == anonymizer.TagReplace {
-		name = strings.TrimSuffix(header.Filename, ext) + "_pseudonymise" + ext
+		name = strings.TrimSuffix(filename, filepath.Ext(filename)) + "_pseudonymise" + ext
 	}
 	token := a.store(name, data)
 	res.Name, res.Download, res.Seconds = name, "/api/download/"+token, elapsed.Seconds()
 	a.log.Info("document redacted", "format", ext, "bytes", len(data), "elements", len(res.Elements), "duration", elapsed.Round(time.Millisecond))
+	if send != nil {
+		send(map[string]any{"result": res})
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+// redactCSV redacts a CSV file from one file to the other, as a stream.
+func (a *app) redactCSV(ctx context.Context, in, out, ext string, size int64, bias float64, strategy anonymizer.Strategy, progress func(done, total int64)) (*response, error) {
+	src, err := os.Open(in)
+	if err != nil {
+		return nil, err
+	}
+	defer src.Close()
+	dst, err := os.Create(out)
+	if err != nil {
+		return nil, err
+	}
+	res, err := processCSV(ctx, a.m, src, dst, ext, size, bias, strategy, progress)
+	if cerr := dst.Close(); err == nil {
+		err = cerr
+	}
+	return res, err
 }
 
 func (a *app) store(name string, data []byte) string {
