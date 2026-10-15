@@ -28,6 +28,9 @@ const modelDir = "/model"
 
 func main() {
 	self := js.Global()
+	// Go's WebAssembly has a single thread: parts read at the same time
+	// would only hold more buffers.
+	csvParts = 1
 	start := time.Now()
 	m, err := indecis.Load(modelDir)
 	if err != nil {

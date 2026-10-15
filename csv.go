@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bornholm/go-anon/pkg/anonymizer"
 	pkgcsv "github.com/bornholm/go-anon/pkg/csv"
@@ -33,6 +35,32 @@ const (
 	// towns, categories, recurring remarks. Up to maxCached lines.
 	maxCached = 200_000
 )
+
+// identifier returns the passage of a cell that go-anon's regular
+// expressions find in full, such as an e-mail address or a phone number,
+// shifted by at, the start of the value in its line: the model, which
+// would mask it as well, does not read it. Identifiers cost it many
+// tokens.
+func identifier(value string, at int) ([]recognizer.Found, bool) {
+	trimmed := strings.TrimSpace(value)
+	start := strings.Index(value, trimmed)
+	for _, e := range idPatterns(value, nil) {
+		if e.Start <= start && e.End >= start+len(trimmed) {
+			e.Start, e.End = e.Start+at, e.End+at
+			return []recognizer.Found{{Entity: e}}, true
+		}
+	}
+	return nil, false
+}
+
+var idPatterns = ner.RegexEntityFilter(ner.BuiltinRegexPatterns)
+
+// csvParts is the number of parts of a batch the model reads at the same
+// time, of about csvPartBytes of text each. Each part the model reads
+// holds buffers in proportion to its windows of text: small parts keep
+// the memory low (400 MB at most with these values, 2 GB with parts of
+// 64 KB), at the same speed.
+var csvParts, csvPartBytes = 4, 4 << 10
 
 // isCSV tells whether a file name is processed by processCSV.
 func isCSV(ext string) bool { return ext == ".csv" || ext == ".tsv" }
@@ -69,9 +97,14 @@ type counted struct {
 // it in memory. size is the length of in, for progress, which receives
 // the bytes read so far after each batch.
 func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writer, ext string, size int64, bias float64, strategy anonymizer.Strategy, progress func(done, total int64)) (*response, error) {
-	rec := newRecognizer(m, bias)
+	// The parts of a batch are read by the model at the same time, each by
+	// its own recognizer: it keeps what it found in its part.
 	var found []recognizer.Found
-	rec.OnFound = func(_ string, f []recognizer.Found) { found = f }
+	recs := make([]*recognizer.Recognizer, csvParts)
+	for k := range recs {
+		recs[k] = newRecognizer(m, bias)
+		recs[k].OnFound = func(_ string, f []recognizer.Found) { found = f }
+	}
 	cell := &preset{}
 	// In redaction mode go-anon keeps no table of what it replaced: the
 	// list is built from the entities of each cell. Fixed-length blocks,
@@ -88,6 +121,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 	if ext == ".tsv" {
 		opts = append(opts, pkgcsv.WithSeparator('\t'))
 	}
+	opts = append(opts, pkgcsv.WithBatchBytes(csvParts*csvPartBytes))
 	stream, err := pkgcsv.NewStream(in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -96,6 +130,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 	res := &response{}
 	list := map[string]*counted{}
 	cached := map[string][]recognizer.Found{}
+	direct := map[string][]recognizer.Found{}
 	var batch []csvRow
 	// go-anon's stream keeps the header as is, and it names the columns of
 	// the rows: the model, reading « nom » or « téléphone » alone, would
@@ -106,6 +141,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 		}
 		labels := stream.Header()
 		batch = batch[:0]
+		clear(direct)
 		for _, r := range rows {
 			row := csvRow{cells: r.Cells, lines: make([]string, len(r.Cells)), at: make([]int, len(r.Cells))}
 			for j, v := range r.Cells {
@@ -117,24 +153,41 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 					prefix = strings.TrimSpace(labels[j]) + " : "
 				}
 				row.lines[j], row.at[j] = prefix+v, len(prefix)
+				if f, ok := identifier(v, len(prefix)); ok {
+					direct[row.lines[j]] = f
+				}
 			}
 			batch = append(batch, row)
 		}
-		var paragraphs []string
-		for _, row := range batch {
+		part := func(i int) int { return i * len(recs) / len(batch) }
+		paragraphs := make([][]string, len(recs))
+		for i, row := range batch {
+			k := part(i)
 			for _, l := range row.lines {
-				if _, ok := cached[l]; l != "" && !ok {
-					paragraphs = append(paragraphs, l)
+				_, known := cached[l]
+				if _, ok := direct[l]; ok {
+					known = true
+				}
+				if l != "" && !known {
+					paragraphs[k] = append(paragraphs[k], l)
 				}
 			}
-			paragraphs = append(paragraphs, "") // a blank line between rows
+			paragraphs[k] = append(paragraphs[k], "") // a blank line between rows
 		}
-		if len(paragraphs) > len(batch) {
-			if err := rec.Document(ctx, paragraphs); err != nil {
-				return err
+		errs := make([]error, len(recs))
+		var wg sync.WaitGroup
+		for k, p := range paragraphs {
+			if strings.TrimSpace(strings.Join(p, "")) == "" {
+				continue
 			}
+			wg.Go(func() { errs[k] = recs[k].Document(ctx, p) })
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return err
 		}
 		for i, row := range batch {
+			rec := recs[part(i)]
 			for j, value := range row.cells {
 				if row.lines[j] == "" {
 					continue
@@ -142,6 +195,8 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 				found = nil
 				if c, ok := cached[row.lines[j]]; ok {
 					found = c
+				} else if d, ok := direct[row.lines[j]]; ok {
+					found = d
 				} else if _, err := rec.Recognize(row.lines[j]); err != nil {
 					return err
 				} else if len(cached) < maxCached {

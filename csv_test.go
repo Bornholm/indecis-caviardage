@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/csv"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,12 @@ func BenchmarkProcessCSV(b *testing.B) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		b.Fatal(err)
+	}
+	if n, err := strconv.Atoi(os.Getenv("CAVIARDAGE_PARTS")); err == nil {
+		csvParts = n
+	}
+	if n, err := strconv.Atoi(os.Getenv("CAVIARDAGE_PART_KB")); err == nil {
+		csvPartBytes = n << 10
 	}
 	for b.Loop() {
 		start := time.Now()
