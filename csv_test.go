@@ -92,13 +92,14 @@ func BenchmarkProcessCSV(b *testing.B) {
 	}
 	for b.Loop() {
 		start := time.Now()
-		res, err := processCSV(context.Background(), m, bytes.NewReader(data), &bytes.Buffer{}, ".csv", int64(len(data)), 5, anonymizer.Redact, nil)
+		var out bytes.Buffer
+		res, err := processCSV(context.Background(), m, bytes.NewReader(data), &out, ".csv", int64(len(data)), 5, anonymizer.Redact, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
 		s := time.Since(start).Seconds()
 		b.ReportMetric(float64(len(data))/s/1e3, "kB/s")
-		b.Logf("%d rows, %d distinct, %d replaced, %.1f s", res.Rows, res.Distinct, res.Replaced, s)
+		b.Logf("%d rows, %d distinct, %d replaced, %.1f s, %d bytes produced", res.Rows, res.Distinct, res.Replaced, s, out.Len())
 	}
 }
 
