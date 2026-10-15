@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bornholm/go-anon/pkg/anonymizer"
@@ -57,51 +58,86 @@ func cleanTemp(root string) int {
 }
 
 type app struct {
-	m       *indecis.Model
 	log     *slog.Logger
 	maxSize int64
 
-	// One document at a time: the model's bias is set for each, and a
-	// document already takes every core.
-	work sync.Mutex
+	// models holds one model per document processed at a time: the bias
+	// is set on the model for each document. The instances share what
+	// can be shared: the embedding table, mapped from the file, and the
+	// tokenizer; each keeps its encoder layers (about 15 MB).
+	models chan *indecis.Model
+	// admitted counts the requests being processed or waiting for a
+	// model; beyond limit, a request is refused before its document is
+	// received, which would take memory in the processing directory.
+	admitted atomic.Int64
+	limit    int64
 
-	tmp string // see tempRoot
+	tmp     string // see tempRoot
+	results string // the documents waiting for their download
 
 	mu    sync.Mutex
 	files map[string]result
 }
 
+// result is a redacted document waiting for its download, in a file of
+// the results directory: outside Go's memory, which would hold it until
+// a collection and could not overwrite it reliably.
 type result struct {
-	name    string
-	data    []byte
-	expires time.Time
+	name, path string
+	expires    time.Time
 }
 
-func newApp(m *indecis.Model, log *slog.Logger, maxSize int64) *app {
-	a := &app{m: m, log: log, maxSize: maxSize, files: map[string]result{}, tmp: tempRoot()}
+func newApp(models []*indecis.Model, queue int, log *slog.Logger, maxSize int64) (*app, error) {
+	a := &app{log: log, maxSize: maxSize, files: map[string]result{}, tmp: tempRoot(),
+		models: make(chan *indecis.Model, len(models)), limit: int64(len(models) + queue)}
+	for _, m := range models {
+		a.models <- m
+	}
 	if n := cleanTemp(a.tmp); n > 0 {
 		log.Info("removed processing directories left by a previous run", "count", n)
+	}
+	var err error
+	if a.results, err = os.MkdirTemp(a.tmp, tempPrefix+"results-"); err != nil {
+		return nil, err
 	}
 	go func() {
 		for range time.Tick(time.Minute) {
 			a.purge()
 		}
 	}()
-	return a
+	return a, nil
 }
 
-// purge forgets the expired documents, their bytes overwritten first: Go
-// does not clear the memory it frees.
+// purge erases the expired documents.
 func (a *app) purge() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := time.Now()
 	for k, v := range a.files {
 		if now.After(v.expires) {
-			clear(v.data)
+			erase(v.path)
 			delete(a.files, k)
 		}
 	}
+}
+
+// erase overwrites a file with zeros, then removes it: in /dev/shm, its
+// bytes would otherwise stay in memory until the pages are reused.
+func erase(path string) {
+	if f, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
+		if st, err := f.Stat(); err == nil {
+			io.CopyN(f, zeros{}, st.Size())
+		}
+		f.Close()
+	}
+	os.Remove(path)
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
 
 // redact processes the document of a multipart form, its fields bias
@@ -111,6 +147,12 @@ func (a *app) purge() {
 // on disk. With ?progress, the response is a stream of JSON lines: the
 // progress of a CSV file, then the result or the error.
 func (a *app) redact(w http.ResponseWriter, r *http.Request) {
+	if a.admitted.Add(1) > a.limit {
+		a.admitted.Add(-1)
+		httpError(w, http.StatusServiceUnavailable, "le serveur traite déjà le maximum de documents : réessayez dans quelques minutes")
+		return
+	}
+	defer a.admitted.Add(-1)
 	r.Body = http.MaxBytesReader(w, r.Body, a.maxSize+1<<20)
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -194,38 +236,44 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := filepath.Join(dir, "out"+ext)
-	if !a.work.TryLock() {
+	var m *indecis.Model
+	select {
+	case m = <-a.models:
+	default:
 		if send != nil {
 			send(map[string]bool{"queued": true})
 		}
-		a.work.Lock()
+		select {
+		case m = <-a.models:
+		case <-r.Context().Done():
+			return
+		}
 	}
 	start := time.Now()
 	var res *response
 	if isCSV(ext) {
-		res, err = a.redactCSV(r.Context(), in, out, ext, size, bias, strategy, progress)
+		res, err = a.redactCSV(r.Context(), m, in, out, ext, size, bias, strategy, progress)
 	} else {
-		res, err = process(a.m, walkers[ext], in, out, bias, strategy)
+		res, err = process(m, walkers[ext], in, out, bias, strategy)
 	}
 	elapsed := time.Since(start)
-	a.work.Unlock()
+	a.models <- m
 	if err != nil {
 		a.log.Error("redaction", "format", ext, "error", err) // never the content
 		fail(http.StatusUnprocessableEntity, "le document n'a pas pu être traité : "+err.Error())
-		return
-	}
-	data, err := os.ReadFile(out)
-	if err != nil {
-		fail(http.StatusInternalServerError, err.Error())
 		return
 	}
 	name := strings.TrimSuffix(filename, filepath.Ext(filename)) + "_caviarde" + ext
 	if strategy == anonymizer.TagReplace {
 		name = strings.TrimSuffix(filename, filepath.Ext(filename)) + "_pseudonymise" + ext
 	}
-	token := a.store(name, data)
+	token, written, err := a.store(name, out)
+	if err != nil {
+		fail(http.StatusInternalServerError, err.Error())
+		return
+	}
 	res.Name, res.Download, res.Seconds = name, "/api/download/"+token, elapsed.Seconds()
-	a.log.Info("document redacted", "format", ext, "bytes", len(data), "elements", len(res.Elements), "duration", elapsed.Round(time.Millisecond))
+	a.log.Info("document redacted", "format", ext, "bytes", written, "elements", len(res.Elements), "duration", elapsed.Round(time.Millisecond))
 	if send != nil {
 		send(map[string]any{"result": res})
 		return
@@ -235,7 +283,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 }
 
 // redactCSV redacts a CSV file from one file to the other, as a stream.
-func (a *app) redactCSV(ctx context.Context, in, out, ext string, size int64, bias float64, strategy anonymizer.Strategy, progress func(done, total int64)) (*response, error) {
+func (a *app) redactCSV(ctx context.Context, m *indecis.Model, in, out, ext string, size int64, bias float64, strategy anonymizer.Strategy, progress func(done, total int64)) (*response, error) {
 	src, err := os.Open(in)
 	if err != nil {
 		return nil, err
@@ -245,43 +293,61 @@ func (a *app) redactCSV(ctx context.Context, in, out, ext string, size int64, bi
 	if err != nil {
 		return nil, err
 	}
-	res, err := processCSV(ctx, a.m, src, dst, ext, size, bias, strategy, progress)
+	res, err := processCSV(ctx, m, src, dst, ext, size, bias, strategy, progress)
 	if cerr := dst.Close(); err == nil {
 		err = cerr
 	}
 	return res, err
 }
 
-func (a *app) store(name string, data []byte) string {
+// store moves the document produced to the results directory, on the
+// same file system, and returns the token of its download and its size.
+func (a *app) store(name, out string) (string, int64, error) {
 	b := make([]byte, 16)
 	rand.Read(b)
 	token := hex.EncodeToString(b)
+	path := filepath.Join(a.results, token)
+	if err := os.Rename(out, path); err != nil {
+		return "", 0, err
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		erase(path)
+		return "", 0, err
+	}
 	a.purge()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.files[token] = result{name: name, data: data, expires: time.Now().Add(keep)}
-	return token
+	a.files[token] = result{name: name, path: path, expires: time.Now().Add(keep)}
+	return token, st.Size(), nil
 }
 
 func (a *app) download(w http.ResponseWriter, r *http.Request) {
-	// Served once: the document leaves the server's memory with its
-	// download.
+	// Served once: the document leaves the server with its download.
 	a.mu.Lock()
 	res, ok := a.files[r.PathValue("token")]
 	delete(a.files, r.PathValue("token"))
 	a.mu.Unlock()
+	if ok {
+		defer erase(res.path)
+	}
 	if !ok || time.Now().After(res.expires) {
 		http.Error(w, "document déjà téléchargé ou expiré : recommencez", http.StatusNotFound)
 		return
 	}
-	defer clear(res.data)
+	f, err := os.Open(res.path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
 	ctype := mime.TypeByExtension(filepath.Ext(res.name))
 	if ctype == "" {
 		ctype = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": res.name}))
-	w.Write(res.data)
+	io.Copy(w, f)
 }
 
 func httpError(w http.ResponseWriter, code int, msg string) {

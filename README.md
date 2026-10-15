@@ -16,7 +16,7 @@ make run MODEL=model
 ## Ce que le serveur garde, et combien de temps
 
 - Le document reçu et le document produit sont écrits pendant le traitement dans un dossier de `/dev/shm`. Le formulaire est lu au fil de l'envoi : un gros fichier ne passe pas par le répertoire temporaire du système, contrairement au traitement standard des formulaires en Go, qui l'écrirait sur disque au-delà de 32 Mo, en mémoire, jamais sur disque quand ce répertoire existe ; le dossier est supprimé à la fin de la requête, et au démarrage si un arrêt brutal l'avait laissé.
-- Le document caviardé attend son téléchargement en mémoire, au plus 15 minutes. Il est supprimé dès le premier téléchargement, ou à son expiration (purge chaque minute), ses octets effacés.
+- Le document caviardé attend son téléchargement dans un fichier du même répertoire en mémoire, hors du tas de Go, au plus 15 minutes. Il est effacé dès le premier téléchargement, ou à son expiration (purge chaque minute) : ses octets sont remplacés par des zéros, puis le fichier supprimé.
 - La liste des éléments masqués, qui contient les valeurs d'origine, est envoyée au navigateur pour l'affichage ; le serveur ne la garde pas.
 - Les journaux ne portent que le format, la taille, le nombre d'éléments et la durée, jamais de contenu.
 - Go ne remet pas à zéro la mémoire qu'il libère : des fragments peuvent subsister dans le processus tant qu'elle n'est pas réutilisée. Arrêter le serveur après usage les efface.
@@ -72,7 +72,21 @@ Un fichier CSV ou TSV peut peser plusieurs dizaines de mégaoctets. Il est lu et
 - La page liste les 2 000 éléments les plus fréquents. Les comptes portent sur tout le fichier.
 - La page affiche la progression et le temps restant. Côté serveur, ce sont les lignes JSON de `/api/redact?progress` ; sans `?progress`, la réponse reste un seul objet JSON.
 
-Le débit dépend du modèle, qui lit chaque cellule. Sur le portable cité plus haut, un CSV synthétique de clients (`demo/clients.csv`, avec nom, courriel, téléphone, date et commentaire, presque toutes les valeurs différentes) se traite à environ 100 ko/s : 160 000 lignes (20 Mo) en 3 min 20, avec 560 Mo de mémoire au plus, modèle compris (ses poids, 287 Mo, sont lus dans le fichier). Il faut donc compter une quinzaine de minutes pour 80 Mo. La mémoire ne dépend pas de la taille du fichier : elle tient au modèle, aux tampons de l'encodeur, proportionnels au texte qu'il lit d'un coup (d'où des parts de 4 ko), et aux plafonds de la liste et du cache. Avec des parts de 64 ko, le traitement gagnait 13 % de vitesse mais montait à 2,3 Go. Dans le navigateur, sur un seul cœur, c'est dix fois plus lent au moins : la version en ligne convient à des fichiers de quelques mégaoctets. Le serveur traite un document à la fois : un gros CSV fait attendre les suivants, et la page l'indique.
+Le débit dépend du modèle, qui lit chaque cellule. Sur le portable cité plus haut, un CSV synthétique de clients (`demo/clients.csv`, avec nom, courriel, téléphone, date et commentaire, presque toutes les valeurs différentes) se traite à environ 100 ko/s : 160 000 lignes (20 Mo) en 3 min 20, avec 560 Mo de mémoire au plus, modèle compris (ses poids, 287 Mo, sont lus dans le fichier). Il faut donc compter une quinzaine de minutes pour 80 Mo. La mémoire ne dépend pas de la taille du fichier : elle tient au modèle, aux tampons de l'encodeur, proportionnels au texte qu'il lit d'un coup (d'où des parts de 4 ko), et aux plafonds de la liste et du cache. Avec des parts de 64 ko, le traitement gagnait 13 % de vitesse mais montait à 2,3 Go. Dans le navigateur, sur un seul cœur, c'est dix fois plus lent au moins : la version en ligne convient à des fichiers de quelques mégaoctets.
+
+## Montée en charge
+
+Le serveur traite plusieurs documents à la fois (`-workers`, 2 par défaut), chacun avec sa propre instance du modèle, puisque la prudence se règle sur le modèle. Les instances partagent ce qui peut l'être : la table d'embeddings, l'essentiel des 287 Mo du modèle, est lue dans le fichier et ses pages sont communes ; le tokenizer est chargé une fois (`LoadShared` d'indecis). Une instance de plus coûte 2 à 3 Mo au repos.
+
+Le calcul aussi est partagé : le modèle lit au plus quatre textes à la fois, tous documents confondus. Quatre parts d'un lot CSV occupent déjà tous les cœurs, et chaque lecture tient les tampons de l'encodeur (environ 60 Mo). Les documents en cours se relaient au lieu de s'additionner. Mesuré sur le portable cité plus haut, quatre CSV de 1 Mo envoyés en même temps :
+
+| Instances | Durée totale | Durée par document | Mémoire privée max |
+| --- | --- | --- | --- |
+| 1 | 55 s | 12, 26, 40, 55 s | 380 Mo |
+| 2 | 42 s | 21, 21, 42, 42 s | 400 Mo |
+| 4 | 46 s | 46 s chacun | 510 Mo |
+
+Sans ce partage du calcul, quatre instances montaient à 1,1 Go pour la même durée. Le débit total ne dépend pas du nombre d'instances : un document sature déjà le processeur. Plusieurs instances servent la réactivité : un petit document n'attend plus la fin d'un gros CSV, ses lectures s'intercalent avec les siennes. Au-delà de `-workers` documents en cours, les suivants attendent, au plus `-queue` (8 par défaut) ; ensuite, le serveur répond 503 avant de recevoir le document, qui prendrait de la mémoire dans le répertoire de traitement.
 
 ## Vidéo
 

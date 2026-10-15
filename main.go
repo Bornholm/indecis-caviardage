@@ -38,23 +38,33 @@ var demo embed.FS
 func main() {
 	model := flag.String("model", "../indecis-ner/runs/work-fam", "indecis masking model (mask and sensitive questions)")
 	addr := flag.String("addr", "127.0.0.1:8071", "listen address")
-	threads := flag.Int("threads", 0, "cores per document (0: all)")
+	threads := flag.Int("threads", 0, "cores used by the computations (0: all)")
+	workers := flag.Int("workers", 2, "documents processed at the same time, each with its own instance of the model")
+	queue := flag.Int("queue", 8, "documents waiting for an instance of the model; beyond, requests are refused")
 	maxSize := flag.Int64("max-size", 200<<20, "largest document accepted, in bytes")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	start := time.Now()
-	m, err := indecis.Load(*model, indecis.WithInt8(), indecis.WithThreads(*threads))
-	if err != nil {
-		log.Error("loading the model", "error", err)
-		os.Exit(1)
+	models := make([]*indecis.Model, max(*workers, 1))
+	for i := range models {
+		m, err := indecis.Load(*model, indecis.WithInt8(), indecis.WithThreads(*threads))
+		if err != nil {
+			log.Error("loading the model", "error", err)
+			os.Exit(1)
+		}
+		models[i] = m
 	}
 	debug.FreeOSMemory()
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
-	log.Info("model loaded", "dir", *model, "duration", time.Since(start).Round(time.Millisecond), "heap MiB", ms.HeapAlloc>>20)
+	log.Info("model loaded", "dir", *model, "instances", len(models), "duration", time.Since(start).Round(time.Millisecond), "heap MiB", ms.HeapAlloc>>20)
 
-	a := newApp(m, log, *maxSize)
+	a, err := newApp(models, *queue, log, *maxSize)
+	if err != nil {
+		log.Error("results directory", "error", err)
+		os.Exit(1)
+	}
 	static, _ := fs.Sub(web, "web")
 	mux := http.NewServeMux()
 	mux.Handle("GET /", http.FileServer(http.FS(static)))

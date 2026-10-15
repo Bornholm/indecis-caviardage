@@ -82,7 +82,7 @@ func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), i
 	}); err != nil {
 		return nil, err
 	}
-	if err := rec.Document(context.Background(), paragraphs); err != nil {
+	if err := read(context.Background(), rec, paragraphs); err != nil {
 		return nil, err
 	}
 	session, report, err := proc.ProcessWithReport(walker, anonymizer.WithVerification())

@@ -55,6 +55,23 @@ func identifier(value string, at int) ([]recognizer.Found, bool) {
 
 var idPatterns = ner.RegexEntityFilter(ner.BuiltinRegexPatterns)
 
+// reads bounds the texts the model reads at the same time, all
+// documents together: four parts of one CSV batch already take every
+// core, and each read holds the encoder's buffers. Documents processed
+// at the same time take turns instead of adding up.
+var reads = make(chan struct{}, 4)
+
+// read has rec read paragraphs as one text, when reads allows it.
+func read(ctx context.Context, rec *recognizer.Recognizer, paragraphs []string) error {
+	select {
+	case reads <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-reads }()
+	return rec.Document(ctx, paragraphs)
+}
+
 // csvParts is the number of parts of a batch the model reads at the same
 // time, of about csvPartBytes of text each. Each part the model reads
 // holds buffers in proportion to its windows of text: small parts keep
@@ -180,7 +197,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 			if strings.TrimSpace(strings.Join(p, "")) == "" {
 				continue
 			}
-			wg.Go(func() { errs[k] = recs[k].Document(ctx, p) })
+			wg.Go(func() { errs[k] = read(ctx, recs[k], p) })
 		}
 		wg.Wait()
 		if err := errors.Join(errs...); err != nil {
