@@ -8,7 +8,7 @@
 // checks the result and strips hidden surfaces (metadata, comments,
 // revisions).
 //
-//	indecis-caviardage -model ../indecis-ner/runs/work-fam
+//	indecis-caviardage -model ../indecis-ner/runs/work-fam-p576
 //
 // then open http://127.0.0.1:8071.
 package main
@@ -36,7 +36,7 @@ var web embed.FS
 var demo embed.FS
 
 func main() {
-	model := flag.String("model", "../indecis-ner/runs/work-fam", "indecis masking model (mask and sensitive questions)")
+	model := flag.String("model", "../indecis-ner/runs/work-fam-p576", "indecis masking model (mask and sensitive questions)")
 	addr := flag.String("addr", "127.0.0.1:8071", "listen address")
 	threads := flag.Int("threads", 0, "cores used by the computations (0: all)")
 	workers := flag.Int("workers", 2, "documents processed at the same time, each with its own instance of the model")

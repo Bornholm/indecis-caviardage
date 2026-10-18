@@ -6,10 +6,10 @@ La version tout navigateur est en ligne : https://bornholm.github.io/indecis-cav
 
 ## Le modèle
 
-Le modèle `work-fam` d'[indecis-ner](https://github.com/Bornholm/indecis-ner) est joint à ses releases. Les commandes `make` l'attendent dans `../indecis-ner/runs/work-fam`, ou dans le dossier donné par `MODEL` :
+Le modèle `work-fam-p576` d'[indecis-ner](https://github.com/Bornholm/indecis-ner) est joint à ses releases depuis la v0.2.0 : c'est `work-fam` réduit à la moitié de ses neurones MLP puis distillé, 15 % plus rapide pour des masques équivalents. Les commandes `make` l'attendent dans `../indecis-ner/runs/work-fam-p576`, ou dans le dossier donné par `MODEL` :
 
 ```bash
-gh release download v0.1.0 --repo Bornholm/indecis-ner --dir model
+gh release download v0.2.0 --repo Bornholm/indecis-ner --dir model
 make run MODEL=model
 ```
 
@@ -54,7 +54,7 @@ Un modèle [indecis](https://github.com/Bornholm/indecis) de 7,7 millions de par
 
 La liste vient de la table de correspondance de go-anon : elle donne exactement ce qui a été remplacé. Le traitement pseudonymise d'abord, puis, en mode caviardage, remplace les pseudonymes par des blocs.
 
-Sur un portable (Core Ultra 7 265U, modèle int8), dix pages A4 se traitent en 1,3 s sur un cœur et environ 320 Mo de mémoire. Les mesures de qualité et leurs limites sont dans le README d'indecis-ner.
+Sur un portable (Core Ultra 7 265U, modèle int8), dix pages A4 de comptes rendus riches en données personnelles (30 000 caractères, 370 passages remplacés) se traitent en 1,6 s sur un cœur et environ 400 Mo de mémoire. Les mesures de qualité et leurs limites sont dans le README d'indecis-ner.
 
 ## Limites
 
@@ -77,11 +77,11 @@ Un fichier CSV ou TSV peut peser plusieurs dizaines de mégaoctets. Il est lu et
 - La page liste les 2 000 éléments les plus fréquents. Les comptes portent sur tout le fichier.
 - La page affiche la progression et le temps restant. Côté serveur, ce sont les lignes JSON de `/api/redact?progress` ; sans `?progress`, la réponse reste un seul objet JSON.
 
-Le débit dépend du modèle, qui lit chaque cellule. Sur le portable cité plus haut, un CSV synthétique de clients (`demo/clients.csv`, avec nom, courriel, téléphone, date et commentaire, presque toutes les valeurs différentes) se traite à environ 240 ko/s : 160 000 lignes (20 Mo) en 1 min 30, avec 600 Mo de mémoire au plus, modèle compris (ses poids, 287 Mo, sont lus dans le fichier). Il faut compter six minutes pour 80 Mo. La mémoire ne dépend pas de la taille du fichier : elle tient au modèle, aux tampons de l'encodeur, proportionnels au texte qu'il lit d'un coup (d'où des parts de 4 ko), et aux plafonds de la liste et du cache. Avec des parts de 64 ko, le traitement gagnait 13 % de vitesse mais montait à 2,3 Go. Dans le navigateur, sur un seul cœur, c'est dix fois plus lent au moins : la version en ligne convient à des fichiers de quelques mégaoctets.
+Le débit dépend du modèle, qui lit chaque cellule. Sur le portable cité plus haut, un CSV synthétique de clients (`demo/clients.csv`, avec nom, courriel, téléphone, date et commentaire, presque toutes les valeurs différentes) se traite à environ 290 ko/s : 160 000 lignes (20 Mo) en 1 min 15, avec 570 Mo de mémoire au plus, modèle compris (ses poids, 276 Mo, sont lus dans le fichier). Il faut compter cinq minutes pour 80 Mo. La mémoire ne dépend pas de la taille du fichier : elle tient au modèle, aux tampons de l'encodeur, proportionnels au texte qu'il lit d'un coup (d'où des parts de 4 ko), et aux plafonds de la liste et du cache. Avec des parts de 64 ko, le traitement gagnait 13 % de vitesse mais montait à 2,3 Go. Dans le navigateur, sur un seul cœur, c'est dix fois plus lent au moins : la version en ligne convient à des fichiers de quelques mégaoctets.
 
 ## Montée en charge
 
-Le serveur traite plusieurs documents à la fois (`-workers`, 2 par défaut), chacun avec sa propre instance du modèle, puisque la prudence se règle sur le modèle. Les instances partagent ce qui peut l'être : la table d'embeddings, l'essentiel des 287 Mo du modèle, est lue dans le fichier et ses pages sont communes ; le tokenizer est chargé une fois (`LoadShared` d'indecis). Une instance de plus coûte 2 à 3 Mo au repos.
+Le serveur traite plusieurs documents à la fois (`-workers`, 2 par défaut), chacun avec sa propre instance du modèle, puisque la prudence se règle sur le modèle. Les instances partagent ce qui peut l'être : la table d'embeddings, l'essentiel des 276 Mo du modèle, est lue dans le fichier et ses pages sont communes ; le tokenizer est chargé une fois (`LoadShared` d'indecis). Une instance de plus coûte 2 à 3 Mo au repos.
 
 Le calcul aussi est partagé : le modèle lit au plus quatre textes à la fois, tous documents confondus. Quatre parts d'un lot CSV occupent déjà tous les cœurs, et chaque lecture tient les tampons de l'encodeur (environ 60 Mo). Les documents en cours se relaient au lieu de s'additionner. Mesuré sur le portable cité plus haut, quatre CSV de 1 Mo envoyés en même temps :
 

@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MODEL_RELEASE: v0.1.0
+  MODEL_RELEASE: v0.2.0
 
 jobs:
   build:

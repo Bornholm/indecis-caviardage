@@ -25,7 +25,7 @@ import (
 func loadModel(t testing.TB) *indecis.Model {
 	dir := os.Getenv("CAVIARDAGE_MODEL")
 	if dir == "" {
-		dir = "../indecis-ner/runs/work-fam"
+		dir = "../indecis-ner/runs/work-fam-p576"
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Skip("no model in", dir)

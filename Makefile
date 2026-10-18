@@ -8,7 +8,7 @@
 GOEXPERIMENT ?= simd
 export GOEXPERIMENT
 
-MODEL ?= ../indecis-ner/runs/work-fam
+MODEL ?= ../indecis-ner/runs/work-fam-p576
 MODEL_FILES = config.json indecis.json tokenizer.json model.safetensors
 DIST ?= dist
 
