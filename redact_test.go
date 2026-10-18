@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // A short passage is counted where go-anon replaced it, not wherever its
 // text occurs: "m" inside "Comptoir" or "matin" is not a replacement.
@@ -26,5 +29,25 @@ func TestElementsCountPlaceholders(t *testing.T) {
 	}
 	if misc.Before != "Jean Mercier " || misc.After != "'a dit qu'il ferait vite." {
 		t.Errorf("context %q / %q, want the original text around the replacement", misc.Before, misc.After)
+	}
+}
+
+func TestAround(t *testing.T) {
+	long := strings.Repeat("é", 100)
+	for _, c := range []struct {
+		s      string
+		before bool
+		want   string
+	}{
+		{"court", true, "court"},
+		{"court", false, "court"},
+		{"ligne 1\nligne 2", true, "ligne 2"},
+		{"ligne 1\nligne 2", false, "ligne 1"},
+		{"a" + long, true, strings.Repeat("é", 60)},
+		{long + "a", false, strings.Repeat("é", 60)},
+	} {
+		if got := around(c.s, c.before); got != c.want {
+			t.Errorf("around(%q, %v) = %q, want %q", c.s, c.before, got, c.want)
+		}
 	}
 }

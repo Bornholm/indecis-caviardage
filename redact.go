@@ -238,18 +238,22 @@ func around(s string, before bool) string {
 		if i := strings.LastIndexByte(s, '\n'); i >= 0 {
 			s = s[i+1:]
 		}
-		for utf8.RuneCountInString(s) > n {
-			_, size := utf8.DecodeRuneInString(s)
-			s = s[size:]
+		// The last n characters, read from the end: the text before a
+		// passage can be the whole document.
+		i := len(s)
+		for k := 0; k < n && i > 0; k++ {
+			_, size := utf8.DecodeLastRuneInString(s[:i])
+			i -= size
 		}
-		return s
+		return s[i:]
 	}
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	for utf8.RuneCountInString(s) > n {
-		_, size := utf8.DecodeLastRuneInString(s)
-		s = s[:len(s)-size]
+	i := 0
+	for k := 0; k < n && i < len(s); k++ {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		i += size
 	}
-	return s
+	return s[:i]
 }
