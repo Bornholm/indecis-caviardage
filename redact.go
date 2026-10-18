@@ -90,7 +90,16 @@ func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), i
 		return nil, err
 	}
 	defer session.Close()
-	res := &response{Replaced: report.TotalEntities(), Elements: elements(session.Mapping, paragraphs, sensitive)}
+	// The paragraphs as go-anon left them: each placeholder marks a
+	// passage it replaced.
+	var outputs []string
+	if err := walker.Walk(func(seg docprocessor.Segment) error {
+		outputs = append(outputs, seg.Text)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	res := &response{Replaced: report.TotalEntities(), Elements: elements(session.Mapping, outputs, sensitive)}
 	res.Redetected = redetected(walker, report)
 	if n := len(res.Redetected); n > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("La vérification a relevé %d passage(s) restés en clair, listés ci-dessous : intitulés sans risque, ou oublis à masquer à la main.", n))
@@ -170,11 +179,22 @@ func redetected(walker docprocessor.Walker, report *docprocessor.Report) []eleme
 var placeholderRe = regexp.MustCompile(`⟦([A-Z][A-Z0-9_]*?)_\d+_[0-9a-f]+⟧`)
 
 // elements lists the replaced passages from go-anon's mapping, in the
-// order they first appear, with their count and context.
-func elements(mapping map[string]string, paragraphs []string, sensitive map[string]string) []element {
+// order they first appear, with their count and context. It reads the
+// placeholders in the paragraphs go-anon produced: a passage is counted
+// where it was replaced, not wherever its text occurs, inside a word for
+// instance. The context shows the original text around it.
+func elements(mapping map[string]string, outputs []string, sensitive map[string]string) []element {
 	type found struct {
 		el       element
 		para, at int
+	}
+	restore := func(s string) string {
+		return placeholderRe.ReplaceAllStringFunc(s, func(p string) string {
+			if o, ok := mapping[p]; ok {
+				return o
+			}
+			return p
+		})
 	}
 	var list []found
 	for placeholder, original := range mapping {
@@ -182,16 +202,16 @@ func elements(mapping map[string]string, paragraphs []string, sensitive map[stri
 		if m == nil || original == "" {
 			continue
 		}
-		f := found{el: element{Type: m[1], Text: strings.TrimSpace(original), Sensitive: sensitive[original]}, para: len(paragraphs)}
-		for i, p := range paragraphs {
-			n := strings.Count(p, original)
+		f := found{el: element{Type: m[1], Text: strings.TrimSpace(original), Sensitive: sensitive[original]}, para: len(outputs)}
+		for i, p := range outputs {
+			n := strings.Count(p, placeholder)
 			if n == 0 {
 				continue
 			}
 			if f.el.Count == 0 {
-				at := strings.Index(p, original)
+				at := strings.Index(p, placeholder)
 				f.para, f.at = i, at
-				f.el.Before, f.el.After = around(p[:at], true), around(p[at+len(original):], false)
+				f.el.Before, f.el.After = around(restore(p[:at]), true), around(restore(p[at+len(placeholder):]), false)
 			}
 			f.el.Count += n
 		}
