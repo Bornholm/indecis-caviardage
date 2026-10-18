@@ -1,7 +1,7 @@
 github.com/bornholm/go-anon v0.3.1-0.20261015164950-355fc63009b6 h1:SLwBmXCu6ZWABoWWZHRi9AWHPkUpnUpDvBuTJPouciQ=
 github.com/bornholm/go-anon v0.3.1-0.20261015164950-355fc63009b6/go.mod h1:q9EiQH9IdPYxfcj3+Htua+WgR0Us4GIJ5uV5j3LZRRA=
-github.com/bornholm/indecis v0.4.0 h1:yLuXasqYyr+Jtyfuk003QJw3nr3zXl5A68bvKAMf3yQ=
-github.com/bornholm/indecis v0.4.0/go.mod h1:nNkoX8XEWjrabPBAQQBdwkaZBPcaFSjYQWMD4FMTf/I=
+github.com/bornholm/indecis v0.5.0 h1:DybNqpTWc9j6tOEN7fx5ghitb5tEs3diHGSNkryWttQ=
+github.com/bornholm/indecis v0.5.0/go.mod h1:nNkoX8XEWjrabPBAQQBdwkaZBPcaFSjYQWMD4FMTf/I=
 github.com/bornholm/indecis-ner v0.1.0 h1:Ax/VPn4Tv/APunqKRDWE/W+X2iNJEuRFRd7rEluPOXY=
 github.com/bornholm/indecis-ner v0.1.0/go.mod h1:MBB5u5yZaC0BIHCkGwr+QY07U51Q1Y2nkXf7o2uNNJs=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
