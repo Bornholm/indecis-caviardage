@@ -83,15 +83,15 @@ Le débit dépend du modèle, qui lit chaque cellule. Sur le portable cité plus
 
 Le serveur traite plusieurs documents à la fois (`-workers`, 2 par défaut), chacun avec sa propre instance du modèle, puisque la prudence se règle sur le modèle. Les instances partagent ce qui peut l'être : la table d'embeddings, l'essentiel des 276 Mo du modèle, est lue dans le fichier et ses pages sont communes ; le tokenizer est chargé une fois (`LoadShared` d'indecis). Une instance de plus coûte 2 à 3 Mo au repos.
 
-Le calcul aussi est partagé : le modèle lit au plus quatre textes à la fois, tous documents confondus. Quatre parts d'un lot CSV occupent déjà tous les cœurs, et chaque lecture tient les tampons de l'encodeur (environ 60 Mo). Les documents en cours se relaient au lieu de s'additionner. Mesuré sur le portable cité plus haut, quatre CSV de 1 Mo envoyés en même temps :
+Le calcul aussi est partagé : le modèle lit au plus quatre textes à la fois, tous documents confondus. Quatre parts d'un lot CSV occupent déjà tous les cœurs, et chaque lecture tient les tampons de l'encodeur (environ 60 Mo). Les documents en cours se relaient au lieu de s'additionner. Mesuré sur le portable cité plus haut, quatre CSV de 1 Mo envoyés en même temps (limite de mémoire verrouillée relevée à 1 Go : avec 8 Mo, une partie recevait un 503) :
 
 | Instances | Durée totale | Durée par document | Mémoire privée max |
 | --- | --- | --- | --- |
-| 1 | 55 s | 12, 26, 40, 55 s | 380 Mo |
-| 2 | 42 s | 21, 21, 42, 42 s | 400 Mo |
-| 4 | 46 s | 46 s chacun | 510 Mo |
+| 1 | 22 s | 6, 11, 17, 22 s | 400 Mo |
+| 2 | 17 s | 9, 9, 17, 17 s | 500 Mo |
+| 4 | 17 s | 17 s chacun | 550 Mo |
 
-Sans ce partage du calcul, quatre instances montaient à 1,1 Go pour la même durée. Le débit total ne dépend pas du nombre d'instances : un document sature déjà le processeur. Plusieurs instances servent la réactivité : un petit document n'attend plus la fin d'un gros CSV, ses lectures s'intercalent avec les siennes. Au-delà de `-workers` documents en cours, les suivants attendent, au plus `-queue` (8 par défaut) ; ensuite, le serveur répond 503 avant de recevoir le document, qui prendrait de la mémoire dans le répertoire de traitement.
+Sans ce partage du calcul, quatre instances montaient à 1,1 Go (mesuré avec indecis v0.4.0). Le débit total dépend peu du nombre d'instances : un document occupe déjà presque tout le processeur. Plusieurs instances servent la réactivité : un petit document n'attend plus la fin d'un gros CSV, ses lectures s'intercalent avec les siennes. Au-delà de `-workers` documents en cours, les suivants attendent, au plus `-queue` (8 par défaut) ; ensuite, le serveur répond 503 avant de recevoir le document, qui prendrait de la mémoire dans le répertoire de traitement.
 
 ## Vidéo
 
