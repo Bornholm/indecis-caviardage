@@ -32,6 +32,10 @@ const keep = 15 * time.Minute
 // read files. A CSV file stays in secret memory.
 const tempPrefix = "caviardage-"
 
+// maxField bounds a form field other than the document: the terms to
+// keep make the longest.
+const maxField = 64 << 10
+
 // tempRoot is where documents are processed: /dev/shm, in memory, when it
 // is available, so that no document is written to a disk whatever /tmp
 // is; the system's temporary directory otherwise.
@@ -137,8 +141,8 @@ func (zeros) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// redact processes the document of a multipart form, its fields bias
-// and strategy in any order. The parts are read as they arrive, the
+// redact processes the document of a multipart form, its fields bias,
+// strategy, keep and release (see parseSettings) in any order. The parts are read as they arrive, the
 // document copied straight into secret memory, where it waits for a
 // model: parsing the form would put a large document in the system's
 // temporary directory, on disk. With ?progress, the response is a stream
@@ -170,7 +174,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if part.FormName() != "document" {
-			v, _ := io.ReadAll(io.LimitReader(part, 64))
+			v, _ := io.ReadAll(io.LimitReader(part, maxField))
 			fields[part.FormName()] = string(v)
 			continue
 		}
@@ -192,14 +196,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "document manquant")
 		return
 	}
-	bias, err := strconv.ParseFloat(fields["bias"], 64)
-	if err != nil || bias < 0 || bias > 10 {
-		bias = 5
-	}
-	strategy := anonymizer.Redact
-	if fields["strategy"] == "tag" {
-		strategy = anonymizer.TagReplace
-	}
+	set := parseSettings(fields["bias"], fields["strategy"], fields["keep"], fields["release"])
 
 	var send func(any)
 	if r.URL.Query().Has("progress") {
@@ -242,9 +239,9 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 	out := &secret{}
 	var res *response
 	if isCSV(ext) {
-		res, err = processCSV(r.Context(), m, doc.Reader(), out, ext, doc.Size(), bias, strategy, progress)
+		res, err = processCSV(r.Context(), m, doc.Reader(), out, ext, doc.Size(), set, progress)
 	} else {
-		res, err = a.redactFile(m, doc, out, ext, bias, strategy)
+		res, err = a.redactFile(m, doc, out, ext, set)
 	}
 	elapsed := time.Since(start)
 	a.models <- m
@@ -262,7 +259,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSuffix(filename, filepath.Ext(filename)) + "_caviarde" + ext
-	if strategy == anonymizer.TagReplace {
+	if set.strategy == anonymizer.TagReplace {
 		name = strings.TrimSuffix(filename, filepath.Ext(filename)) + "_pseudonymise" + ext
 	}
 	token := a.store(name, out)
@@ -279,7 +276,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 // redactFile redacts a Word or ODT document through files, which
 // go-anon's readers need: they exist in /dev/shm for the time of the
 // processing only, then are overwritten with zeros.
-func (a *app) redactFile(m *indecis.Model, doc, out *secret, ext string, bias float64, strategy anonymizer.Strategy) (*response, error) {
+func (a *app) redactFile(m *indecis.Model, doc, out *secret, ext string, set settings) (*response, error) {
 	dir, err := os.MkdirTemp(a.tmp, tempPrefix)
 	if err != nil {
 		return nil, err
@@ -301,7 +298,7 @@ func (a *app) redactFile(m *indecis.Model, doc, out *secret, ext string, bias fl
 	if err != nil {
 		return nil, err
 	}
-	res, err := process(m, walkers[ext], in, produced, bias, strategy)
+	res, err := process(m, walkers[ext], in, produced, set)
 	if err != nil {
 		return nil, err
 	}

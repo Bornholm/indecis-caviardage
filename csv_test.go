@@ -45,7 +45,7 @@ func TestProcessCSV(t *testing.T) {
 	for _, strategy := range []anonymizer.Strategy{anonymizer.Redact, anonymizer.TagReplace} {
 		var out bytes.Buffer
 		var calls int
-		res, err := processCSV(context.Background(), m, strings.NewReader(in), &out, ".csv", int64(len(in)), 5, strategy,
+		res, err := processCSV(context.Background(), m, strings.NewReader(in), &out, ".csv", int64(len(in)), settings{bias: 5, strategy: strategy},
 			func(done, total int64) { calls++ })
 		if err != nil {
 			t.Fatal(err)
@@ -93,7 +93,7 @@ func BenchmarkProcessCSV(b *testing.B) {
 	for b.Loop() {
 		start := time.Now()
 		var out bytes.Buffer
-		res, err := processCSV(context.Background(), m, bytes.NewReader(data), &out, ".csv", int64(len(data)), 5, anonymizer.Redact, nil)
+		res, err := processCSV(context.Background(), m, bytes.NewReader(data), &out, ".csv", int64(len(data)), settings{bias: 5, strategy: anonymizer.Redact}, nil)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -117,11 +117,11 @@ func TestConcurrentInstances(t *testing.T) {
 	run := func(i int) (string, string) {
 		var out bytes.Buffer
 		bias := []float64{3, 7}[i]
-		if _, err := processCSV(context.Background(), models[i], bytes.NewReader(data), &out, ".csv", int64(len(data)), bias, anonymizer.Redact, nil); err != nil {
+		if _, err := processCSV(context.Background(), models[i], bytes.NewReader(data), &out, ".csv", int64(len(data)), settings{bias: bias, strategy: anonymizer.Redact}, nil); err != nil {
 			t.Error(err)
 		}
 		docx := filepath.Join(dir, fmt.Sprintf("out%d.docx", i))
-		if _, err := process(models[i], walkers[".docx"], "demo/compte-rendu.docx", docx, bias, anonymizer.Redact); err != nil {
+		if _, err := process(models[i], walkers[".docx"], "demo/compte-rendu.docx", docx, settings{bias: bias, strategy: anonymizer.Redact}); err != nil {
 			t.Error(err)
 		}
 		text, err := docxText(docx)
@@ -160,4 +160,41 @@ func docxText(path string) (string, error) {
 		return nil
 	})
 	return b.String(), err
+}
+
+// The terms and types kept by the page stay readable in a document, and
+// out of the list; the rest is still masked.
+func TestProcessRelease(t *testing.T) {
+	m := loadModel(t)
+	dir := t.TempDir()
+	run := func(set settings) *response {
+		res, err := process(m, walkers[".docx"], "demo/compte-rendu.docx", filepath.Join(dir, "out.docx"), set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	before := run(settings{bias: 5, strategy: anonymizer.Redact})
+	var term string
+	types := map[string]int{}
+	for _, e := range before.Elements {
+		types[e.Type]++
+		t.Logf("%-8s %.2f %-9s %q", e.Type, e.Confidence, e.Sensitive, e.Text)
+		if term == "" && e.Type != "PERSON" && e.Sensitive == "" && len(e.Text) > 4 {
+			term = e.Text
+		}
+	}
+	after := run(settings{bias: 5, strategy: anonymizer.Redact, release: newReleaser([]string{term}, []string{"DATETIME"})})
+	for _, e := range after.Elements {
+		if e.Text == term || (e.Type == "DATETIME" && e.Sensitive == "") {
+			t.Errorf("%s %q still masked", e.Type, e.Text)
+		}
+	}
+	if len(after.Elements) >= len(before.Elements) || types["PERSON"] == 0 {
+		t.Errorf("%d elements after, %d before (%v)", len(after.Elements), len(before.Elements), types)
+	}
+	t.Logf("kept %q and DATETIME: %d elements, %d before; warnings %q", term, len(after.Elements), len(before.Elements), after.Warnings)
+	for _, e := range after.Redetected {
+		t.Logf("redetected %q", e.Text)
+	}
 }

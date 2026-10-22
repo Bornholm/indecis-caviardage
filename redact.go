@@ -26,9 +26,12 @@ type element struct {
 	Type      string `json:"type"`
 	Text      string `json:"text"`
 	Sensitive string `json:"sensitive,omitempty"`
-	Count     int    `json:"count"`
-	Before    string `json:"before"`
-	After     string `json:"after"`
+	// Confidence is the model's, for the page's suggestions; the
+	// identifiers of regular expressions have 1.
+	Confidence float64 `json:"confidence"`
+	Count      int     `json:"count"`
+	Before     string  `json:"before"`
+	After      string  `json:"after"`
 }
 
 type response struct {
@@ -52,17 +55,24 @@ type response struct {
 // go-anon's mapping (placeholder -> original) is then exactly the list of
 // what was replaced, with its type. In redaction mode, a second pass over
 // the document turns the placeholders into blocks.
-func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), in, out string, bias float64, strategy anonymizer.Strategy) (*response, error) {
-	rec := newRecognizer(m, bias)
-	sensitive := map[string]string{} // original text -> special category
-	rec.OnFound = func(_ string, found []recognizer.Found) {
+func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), in, out string, set settings) (*response, error) {
+	rec := newRecognizer(m, set.bias)
+	origins := map[string]origin{} // original text -> what the model said of it
+	releasing := newReleasing(rec, set.release)
+	releasing.onFound = func(_ string, found []recognizer.Found) {
 		for _, f := range found {
-			if f.Sensitive != "" && !strings.ContainsAny(f.Text, "█⟦") {
-				sensitive[f.Text] = f.Sensitive
+			if strings.ContainsAny(f.Text, "█⟦") {
+				continue
 			}
+			o := origins[f.Text]
+			if f.Sensitive != "" {
+				o.sensitive = f.Sensitive
+			}
+			o.confidence = max(o.confidence, f.Confidence)
+			origins[f.Text] = o
 		}
 	}
-	anon := anonymizer.New(rec, anonymizer.Config{Strategy: anonymizer.TagReplace, ConsistentMap: true})
+	anon := anonymizer.New(releasing, anonymizer.Config{Strategy: anonymizer.TagReplace, ConsistentMap: true})
 	proc := docprocessor.New(anon, docprocessor.WithDocumentVerification())
 	walker, err := open(in)
 	if err != nil {
@@ -99,7 +109,7 @@ func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), i
 	}); err != nil {
 		return nil, err
 	}
-	res := &response{Replaced: report.TotalEntities(), Elements: elements(session.Mapping, outputs, sensitive)}
+	res := &response{Replaced: report.TotalEntities(), Elements: elements(session.Mapping, outputs, origins)}
 	res.Redetected = redetected(walker, report)
 	if n := len(res.Redetected); n > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("La vérification a relevé %d passage(s) restés en clair, listés ci-dessous : intitulés sans risque, ou oublis à masquer à la main.", n))
@@ -107,7 +117,7 @@ func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), i
 	if n := len(report.RegionLeaks); n > 0 {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("%d élément(s) dans du contenu non modifiable (images, champs), restés lisibles", n))
 	}
-	if strategy == anonymizer.Redact {
+	if set.strategy == anonymizer.Redact {
 		err := walker.Walk(func(seg docprocessor.Segment) error {
 			if redacted := placeholderRe.ReplaceAllString(seg.Text, "██████"); redacted != seg.Text {
 				seg.Replace(redacted)
@@ -175,6 +185,12 @@ func redetected(walker docprocessor.Walker, report *docprocessor.Report) []eleme
 	return out
 }
 
+// origin is what the model said of a passage it masked.
+type origin struct {
+	sensitive  string
+	confidence float64
+}
+
 // placeholderRe matches go-anon's placeholders, ⟦TYPE_N_nonce⟧.
 var placeholderRe = regexp.MustCompile(`⟦([A-Z][A-Z0-9_]*?)_\d+_[0-9a-f]+⟧`)
 
@@ -183,7 +199,7 @@ var placeholderRe = regexp.MustCompile(`⟦([A-Z][A-Z0-9_]*?)_\d+_[0-9a-f]+⟧`)
 // placeholders in the paragraphs go-anon produced: a passage is counted
 // where it was replaced, not wherever its text occurs, inside a word for
 // instance. The context shows the original text around it.
-func elements(mapping map[string]string, outputs []string, sensitive map[string]string) []element {
+func elements(mapping map[string]string, outputs []string, origins map[string]origin) []element {
 	type found struct {
 		el       element
 		para, at int
@@ -202,7 +218,8 @@ func elements(mapping map[string]string, outputs []string, sensitive map[string]
 		if m == nil || original == "" {
 			continue
 		}
-		f := found{el: element{Type: m[1], Text: strings.TrimSpace(original), Sensitive: sensitive[original]}, para: len(outputs)}
+		o := origins[original]
+		f := found{el: element{Type: m[1], Text: strings.TrimSpace(original), Sensitive: o.sensitive, Confidence: o.confidence}, para: len(outputs)}
 		for i, p := range outputs {
 			n := strings.Count(p, placeholder)
 			if n == 0 {

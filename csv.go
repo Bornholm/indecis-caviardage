@@ -113,21 +113,21 @@ type counted struct {
 // processCSV redacts a CSV or TSV file from in to out, without holding
 // it in memory. size is the length of in, for progress, which receives
 // the bytes read so far after each batch.
-func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writer, ext string, size int64, bias float64, strategy anonymizer.Strategy, progress func(done, total int64)) (*response, error) {
+func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writer, ext string, size int64, set settings, progress func(done, total int64)) (*response, error) {
 	// The parts of a batch are read by the model at the same time, each by
 	// its own recognizer: it keeps what it found in its part.
 	var found []recognizer.Found
 	recs := make([]*recognizer.Recognizer, csvParts)
 	for k := range recs {
-		recs[k] = newRecognizer(m, bias)
+		recs[k] = newRecognizer(m, set.bias)
 		recs[k].OnFound = func(_ string, f []recognizer.Found) { found = f }
 	}
 	cell := &preset{}
 	// In redaction mode go-anon keeps no table of what it replaced: the
 	// list is built from the entities of each cell. Fixed-length blocks,
 	// as in documents.
-	config := anonymizer.Config{Strategy: strategy, ConsistentMap: true}
-	if strategy == anonymizer.Redact {
+	config := anonymizer.Config{Strategy: set.strategy, ConsistentMap: true}
+	if set.strategy == anonymizer.Redact {
 		config.RedactMinRunes, config.RedactMaxRunes = 6, 6
 	}
 	anon := anonymizer.New(cell, config)
@@ -219,6 +219,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 				} else if len(cached) < maxCached {
 					cached[row.lines[j]] = found
 				}
+				found = set.release.apply(row.lines[j], found)
 				// The passages of the line, cut to the value: the column
 				// name is only there for context.
 				cell.found = cell.found[:0]
@@ -255,7 +256,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 					}
 					label := row.lines[j][:row.at[j]]
 					list[k] = &counted{order: len(list), el: element{
-						Type: string(ent.Type), Text: strings.TrimSpace(ent.Text), Sensitive: sensitive[ent.Start], Count: 1,
+						Type: string(ent.Type), Text: strings.TrimSpace(ent.Text), Sensitive: sensitive[ent.Start], Confidence: ent.Confidence, Count: 1,
 						Before: around(label+value[:ent.Start], true), After: around(value[ent.End:], false),
 					}}
 				}

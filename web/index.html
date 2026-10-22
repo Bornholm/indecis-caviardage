@@ -74,6 +74,31 @@
   .ok { color: #6fd08c; }
   .meh { color: var(--warn); }
   progress { width: 100%; accent-color: var(--accent); }
+  textarea { width: 100%; font: inherit; font-size: 14px; color: var(--fg); background: #11141c; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; resize: vertical; }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .kinds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .kinds label { font-size: 14px; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+  .kinds input { display: none; }
+  .kinds label:has(input:checked) { border-color: var(--accent); background: #18213a; }
+  .free { font: inherit; font-size: 12px; font-weight: 400; width: auto; padding: 2px 8px; border-radius: 6px;
+    background: transparent; color: var(--dim); border: 1px solid var(--line); }
+  .free:hover { color: var(--fg); border-color: var(--accent); }
+  .free.on { background: #18213a; border-color: var(--accent); color: var(--fg); }
+  ul.items li.freed .value { opacity: .45; text-decoration: line-through; }
+  ul.items li.freed .ctx { opacity: .45; }
+  /* Kept in view at the bottom of the window while the list scrolls. */
+  .release { position: sticky; bottom: 12px; z-index: 1; margin: 14px 0 0; padding: 12px 14px; border: 1px solid var(--accent);
+    border-radius: 10px; background: #131a2b; box-shadow: 0 8px 30px rgba(0, 0, 0, .55); max-height: 60vh; overflow: auto; }
+  .release p { margin: 0 0 8px; }
+  .release .acts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .release .acts button { width: auto; }
+  .release button.second { background: transparent; color: var(--fg); border: 1px solid var(--line); font-weight: 400; }
+  .suggest { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 14px; }
+  .suggest button { width: auto; }
+  button.reset { margin-top: 12px; background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 400; font-size: 14px; }
+  button.reset:hover { color: var(--fg); border-color: var(--accent); }
+  .suggest .terms { color: var(--dim); margin: 4px 0 8px; word-break: break-word; }
   footer { padding: 0 28px 20px; color: var(--dim); font-size: 14px; }
   @media (max-width: 900px) {
     main { grid-template-columns: 1fr; padding: 12px 16px 24px; }
@@ -115,6 +140,14 @@
         <label><input type="radio" name="mode" value="tag">⟦PERSON_1⟧</label>
       </div>
       <p class="note">Le caviardage est irréversible. La pseudonymisation garde les liens : une même personne reçoit le même pseudonyme dans tout le document.</p>
+      <label class="opt" for="keep">Termes à garder lisibles</label>
+      <textarea id="keep" rows="3" placeholder="Un terme par ligne : Jira, service Comptabilité…"></textarea>
+      <p class="note">Retirés des masques partout où ils apparaissent, quelle que soit la casse : noms d'outils, de services, de produits.</p>
+      <label class="opt">Garder lisibles tous les passages de type</label>
+      <div class="kinds" id="kinds"></div>
+      <p class="note">Sauf les données sensibles, toujours masquées. À manier avec prudence : le modèle réunit des passages voisins sous un seul type, et « fréquente la synagogue de Chalon » peut sortir en lieu. Les noms, identifiants, courriels et téléphones se libèrent un par un, depuis la liste.</p>
+      <p class="note">Ces réglages sont gardés dans ce navigateur pour les prochains documents ; les documents, eux, ne le sont pas.</p>
+      <button id="reset" class="reset">Réinitialiser les réglages</button>
     </section>
     <section id="machine" hidden>
       <h2>Ce navigateur</h2>
@@ -152,8 +185,19 @@ const BIAS_NOTES = {
   7: "Très prudent : moins de fuites, davantage de masques superflus.",
   8: "Maximal : masque largement, le texte devient difficile à lire.",
 };
+// RELEASABLE are the types whose passages can all be kept readable, by
+// the model's name; go-anon's placeholders give some of them longer.
+const RELEASABLE = {
+  LOC: "Lieu", ORG: "Organisation", DEM: "Caractéristique", DATETIME: "Date ou durée", QUANTITY: "Montant ou nombre", MISC: "Autre",
+};
+const MODEL_TYPES = { LOCATION: "LOC", ORGANIZATION: "ORG" };
+const STORED = "caviardage.settings";
 const LOCAL = document.querySelector("meta[name=mode]").content === "local";
 let file = null, result = null, filter = null;
+// docTerms are the passages released from the list for the current
+// document, sent with the terms of the settings; freed are the ones
+// ticked since the last result. Neither is stored: they may be names.
+let docTerms = [], freed = new Set();
 let worker = null, modelReady = !LOCAL, nextId = 0;
 const pending = new Map(); // worker requests by id
 
@@ -164,8 +208,54 @@ drop.addEventListener("drop", (ev) => choose(ev.dataTransfer.files[0]));
 $("file").addEventListener("change", (ev) => choose(ev.target.files[0]));
 $("bias").addEventListener("input", showBias);
 $("go").addEventListener("click", run);
+$("reset").addEventListener("click", reset);
+for (const [t, name] of Object.entries(RELEASABLE)) {
+  const l = el("label");
+  const c = el("input");
+  c.type = "checkbox";
+  c.value = t;
+  l.append(c, name);
+  $("kinds").append(l);
+}
+restore();
+document.querySelectorAll("#bias, input[name=mode], #keep, #kinds input").forEach((e) => e.addEventListener("change", save));
 showBias();
 if (LOCAL) startLocal();
+
+// restore puts back the settings of the last visit. Storage can be
+// missing or refused: the page then starts from its defaults.
+function restore() {
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(STORED)); } catch (e) {}
+  if (!v) return;
+  if (v.bias >= 3 && v.bias <= 8) $("bias").value = v.bias;
+  const mode = document.querySelector("input[name=mode][value=" + (v.mode === "tag" ? "tag" : "redact") + "]");
+  mode.checked = true;
+  if (typeof v.keep === "string") $("keep").value = v.keep;
+  for (const c of document.querySelectorAll("#kinds input")) c.checked = (v.release || []).includes(c.value);
+}
+
+function save() {
+  const v = { bias: Number($("bias").value), mode: strategy(), keep: $("keep").value, release: releasedTypes() };
+  try { localStorage.setItem(STORED, JSON.stringify(v)); } catch (e) {}
+}
+
+// reset forgets the stored settings and puts back the page's defaults.
+function reset() {
+  if ($("keep").value.trim() && !confirm("Effacer aussi les termes à garder lisibles ?")) return;
+  try { localStorage.removeItem(STORED); } catch (e) {}
+  $("bias").value = 5;
+  document.querySelector("input[name=mode][value=redact]").checked = true;
+  $("keep").value = "";
+  for (const c of document.querySelectorAll("#kinds input")) c.checked = false;
+  showBias();
+}
+
+function strategy() { return document.querySelector("input[name=mode]:checked").value; }
+function releasedTypes() { return [...document.querySelectorAll("#kinds input:checked")].map((c) => c.value); }
+// keepTerms are the terms of the settings and those released for the
+// document, one per line.
+function keepTerms() { return [$("keep").value, ...docTerms].join("\n"); }
 
 function choose(f) {
   if (!f) return;
@@ -176,6 +266,7 @@ function choose(f) {
     return;
   }
   file = f;
+  docTerms = [];
   $("fname").textContent = f.name;
   $("fhint").textContent = size(f.size) + " · cliquer pour en choisir un autre";
   $("go").disabled = !modelReady;
@@ -249,7 +340,7 @@ async function redactLocal(f, bias, strategy, progress) {
   const id = nextId++;
   const m = await new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, progress });
-    worker.postMessage({ id, name: f.name, bytes, bias: Number(bias), strategy }, [bytes]);
+    worker.postMessage({ id, name: f.name, bytes, bias: Number(bias), strategy, keep: keepTerms(), release: releasedTypes().join(",") }, [bytes]);
   });
   if (result && result.download.startsWith("blob:")) URL.revokeObjectURL(result.download);
   m.response.download = URL.createObjectURL(new Blob([m.document], { type: f.type || "application/octet-stream" }));
@@ -262,6 +353,8 @@ async function redactServer(f, bias, strategy, progress, queued) {
   const form = new FormData();
   form.append("bias", bias);
   form.append("strategy", strategy);
+  form.append("keep", keepTerms());
+  form.append("release", releasedTypes().join(","));
   form.append("document", f);
   const r = await fetch("/api/redact?progress", { method: "POST", body: form });
   if (!r.ok) {
@@ -324,15 +417,14 @@ async function run() {
     const e = $("elapsed");
     if (e) e.textContent = status + " · " + duration((performance.now() - t0) / 1000) + " écoulées";
   }, 500);
-  const strategy = document.querySelector("input[name=mode]:checked").value;
   try {
     let body;
     if (LOCAL) {
-      body = await redactLocal(file, $("bias").value, strategy, progress);
+      body = await redactLocal(file, $("bias").value, strategy(), progress);
     } else {
-      body = await redactServer(file, $("bias").value, strategy, progress, queued);
+      body = await redactServer(file, $("bias").value, strategy(), progress, queued);
     }
-    result = body; filter = null;
+    result = body; filter = null; freed = new Set();
     render();
   } catch (e) {
     $("out").replaceChildren(el("p", "error", "Échec : " + e.message));
@@ -350,6 +442,12 @@ function el(tag, cls, text) {
 }
 
 function label(t) { return TYPES[t] || t; }
+function modelType(t) { return MODEL_TYPES[t] || t; }
+// eligible tells whether a suggestion may release an element: a
+// quasi-identifier, outside the special categories. Names and
+// identifiers are released by hand only.
+function eligible(x) { return !x.sensitive && modelType(x.type) in RELEASABLE; }
+function decimal(n) { return n.toFixed(2).replace(".", ","); }
 // key groups an element for the filters: its special category if it has
 // one, its type otherwise.
 function key(x) { return x.sensitive ? "S:" + x.sensitive : label(x.type); }
@@ -416,10 +514,15 @@ function render() {
   const shown = items.filter((x) => filter === null || key(x) === filter);
   if (shown.length === 0) ul.append(el("li", "empty", "Aucun élément masqué."));
   for (const x of shown) {
-    const li = el("li");
+    const li = el("li", freed.has(x.text) ? "freed" : null);
     const kind = el("div", "kind");
     kind.append(el("span", "tag", label(x.type)));
     if (x.sensitive) kind.append(el("span", "tag sens", SENSITIVE[x.sensitive] || x.sensitive));
+    const free = el("button", "free" + (freed.has(x.text) ? " on" : ""), freed.has(x.text) ? "Libéré ✓" : "Libérer");
+    free.title = "Laisser ce passage lisible partout dans le document, à la prochaine génération" +
+      (x.confidence ? " · confiance du modèle : " + decimal(x.confidence) : "");
+    free.onclick = () => { freed.has(x.text) ? freed.delete(x.text) : freed.add(x.text); render(); };
+    kind.append(free);
     const ctx = el("div", "ctx");
     const m = el("mark", null, x.text);
     m.title = "Cliquer pour voir le passage masqué";
@@ -429,6 +532,77 @@ function render() {
     ul.append(li);
   }
   out.append(ul);
+  if (freed.size || docTerms.length) out.append(releaseBox(items));
+}
+
+// releaseBox lists what was released and, from it, what else could be:
+// the masks the model was less sure of, and the types released for the
+// most part. It only suggests; nothing is released without a click.
+function releaseBox(items) {
+  const box = el("div", "release");
+  const n = freed.size;
+  box.append(el("p", null, n
+    ? (n > 1 ? n + " passages libérés : ils resteront lisibles" : "1 passage libéré : il restera lisible") + " dans le document régénéré."
+    : docTerms.length + (docTerms.length > 1 ? " passages libérés" : " passage libéré") + " pour ce document."));
+  const acts = el("div", "acts");
+  const again = el("button", null, "Régénérer le document");
+  again.disabled = !n || !file;
+  again.onclick = () => { docTerms.push(...freed); run(); };
+  const keep = el("button", "second", "Ajouter aux termes à garder");
+  keep.title = "Les garder lisibles aussi dans les prochains documents : ils seront enregistrés dans ce navigateur";
+  keep.disabled = !n;
+  keep.onclick = () => {
+    const lines = $("keep").value.split("\n").map((l) => l.trim()).filter(Boolean);
+    for (const t of freed) if (!lines.some((l) => l.toLowerCase() === t.toLowerCase())) lines.push(t);
+    $("keep").value = lines.join("\n");
+    save();
+    docTerms.push(...freed);
+    run();
+  };
+  acts.append(again, keep);
+  if (docTerms.length) {
+    const reset = el("button", "second", "Tout remasquer");
+    reset.title = "Régénérer sans les passages libérés depuis la liste : " + docTerms.join(", ");
+    reset.onclick = () => { docTerms = []; run(); };
+    acts.append(reset);
+  }
+  box.append(acts);
+
+  const chosen = items.filter((x) => freed.has(x.text) && eligible(x));
+  if (!chosen.length) return box;
+  // By confidence: the masks under the highest confidence among the
+  // passages released.
+  const limit = Math.max(...chosen.map((x) => x.confidence));
+  const under = items.filter((x) => !freed.has(x.text) && eligible(x) && x.confidence <= limit);
+  if (under.length) {
+    const s = el("div", "suggest");
+    s.append(el("div", null, "Les passages libérés avaient une confiance du modèle de " + decimal(limit) + " au plus. " +
+      under.length + (under.length > 1 ? " autres masques sont" : " autre masque est") + " sous ce seuil, hors noms, identifiants et données sensibles :"));
+    s.append(el("div", "terms", under.slice(0, 15).map((x) => "« " + x.text + " »").join(", ") + (under.length > 15 ? "…" : "")));
+    const b = el("button", "second", "Les libérer aussi");
+    b.onclick = () => { for (const x of under) freed.add(x.text); render(); };
+    s.append(b);
+    box.append(s);
+  }
+  // By type: most of a type's masks released.
+  for (const t of Object.keys(RELEASABLE)) {
+    const all = items.filter((x) => eligible(x) && modelType(x.type) === t);
+    const done = all.filter((x) => freed.has(x.text)).length;
+    if (done < 2 || 2 * done < all.length || releasedTypes().includes(t)) continue;
+    const s = el("div", "suggest");
+    s.append(el("div", null, "Vous avez libéré " + done + " des " + all.length + " passages de type « " + RELEASABLE[t] +
+      " » non sensibles. Les garder tous lisibles, dans ce document et les suivants ?"));
+    const b = el("button", "second", "Garder lisibles les passages « " + RELEASABLE[t] + " »");
+    b.onclick = () => {
+      for (const c of document.querySelectorAll("#kinds input")) if (c.value === t) c.checked = true;
+      save();
+      docTerms.push(...freed);
+      run();
+    };
+    s.append(b);
+    box.append(s);
+  }
+  return box;
 }
 </script>
 </body>

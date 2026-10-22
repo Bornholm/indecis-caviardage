@@ -33,7 +33,20 @@ Le serveur refuse de démarrer sans mémoire secrète. Elle se décompte de la l
 1. Déposer un fichier `.docx`, `.odt`, `.csv` ou `.tsv`.
 2. Régler la **prudence** : plus elle est haute, moins il reste de données lisibles, et plus il y a de masques superflus. À 5, environ 2 % des passages personnels restaient exposés dans nos tests en prose ; à 6, environ 1 %.
 3. Choisir entre le **caviardage** (██████, irréversible) et la **pseudonymisation** (⟦PERSON_1⟧ : une même personne garde le même pseudonyme dans tout le document).
-4. Télécharger le document produit, et parcourir la liste des éléments masqués : type, contexte, nombre d'occurrences, et catégorie sensible (santé, syndicat, convictions, origine, opinions politiques, vie sexuelle, infractions).
+4. Au besoin, donner des **termes à garder lisibles** (noms d'outils, de services, de produits) ou des types de passages à ne plus masquer : voir plus bas.
+5. Télécharger le document produit, et parcourir la liste des éléments masqués : type, contexte, nombre d'occurrences, et catégorie sensible (santé, syndicat, convictions, origine, opinions politiques, vie sexuelle, infractions). Chaque élément peut y être libéré, puis le document régénéré.
+
+## Garder des passages lisibles
+
+Le modèle masque large : dans des verbatims d'entretiens, il masque aussi les services de l'entreprise ou ses outils. Trois moyens de les laisser lisibles, appliqués par le serveur comme par la version navigateur :
+
+- **Des termes à garder** : chacun est retiré des masques partout où il apparaît, quelle que soit la casse, en mot entier (« Jira » dans « Jira, » mais pas dans « Jiraffe »). Ce qui reste d'un masque autour d'un terme reste masqué. Les masques d'une catégorie sensible ne sont pas découpés : ils ne sont libérés que si un terme les couvre en entier.
+- **Des types** : lieux, organisations, caractéristiques, dates, montants, autres. Les données sensibles restent masquées, et les noms, identifiants, courriels et téléphones ne se libèrent qu'un par un. À manier avec prudence : le modèle réunit des passages voisins en un seul masque, d'un seul type. Dans le document de `demo/`, « fréquente avec ses enfants à la synagogue de Chalon » sort en lieu, sans catégorie sensible.
+- **La liste** : un clic sur « Libérer », puis « Régénérer le document », qui relance le traitement avec ces passages pour termes. Le navigateur renvoie le document, qu'il a encore : le serveur ne garde pas l'original. La page propose alors d'étendre le choix, sans rien appliquer d'elle-même : aux autres masques de confiance inférieure ou égale à celle des passages libérés, ou, quand la plupart des passages d'un type ont été libérés, au type entier. Ces suggestions laissent de côté les noms, identifiants et données sensibles.
+
+La confiance est celle du modèle pour chaque masque. Dans le document de `demo/`, sous 0,35, on trouve surtout des masques superflus (« 6 mars », « son médecin traitant », « 80 % », « CPAM ») ; mais « Son fils aîné est suivi au CMP de Chalon » est à 0,43. La page montre donc les masques concernés avant de les libérer.
+
+Les réglages (prudence, mode, termes, types) sont gardés dans le `localStorage` du navigateur. Les passages libérés depuis la liste ne le sont pas, puisqu'il peut s'agir de noms, sauf à les ajouter aux termes à garder.
 
 ## Version tout navigateur
 
