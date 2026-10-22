@@ -45,13 +45,13 @@ func main() {
 	self.Set("caviarder", js.FuncOf(func(_ js.Value, args []js.Value) any {
 		// A worker.js of another build passes other arguments: an index
 		// out of range would stop the Go program for good.
-		if len(args) != 7 {
+		if len(args) != 8 {
 			return promise(func() (any, error) {
 				return nil, fmt.Errorf("la page et le module ne sont pas de la même version : rechargez la page")
 			})
 		}
-		name, data, progress := args[0].String(), args[1], args[6]
-		set := parseSettings(args[2].String(), args[3].String(), args[4].String(), args[5].String())
+		name, data, progress := args[0].String(), args[1], args[7]
+		set := parseSettings(args[2].String(), args[3].String(), args[4].String(), args[5].String(), args[6].String())
 		return promise(func() (any, error) { return redactBytes(m, name, data, set, progress) })
 	}))
 	h := indecis.DetectHardware()

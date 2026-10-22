@@ -58,7 +58,7 @@ type response struct {
 func process(m *indecis.Model, open func(string) (docprocessor.Walker, error), in, out string, set settings) (*response, error) {
 	rec := newRecognizer(m, set.bias)
 	origins := map[string]origin{} // original text -> what the model said of it
-	releasing := newReleasing(rec, set.release)
+	releasing := newReleasing(rec, set)
 	releasing.onFound = func(_ string, found []recognizer.Found) {
 		for _, f := range found {
 			if strings.ContainsAny(f.Text, "█⟦") {

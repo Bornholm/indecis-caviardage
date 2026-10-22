@@ -86,6 +86,12 @@
   .free:hover { color: var(--fg); border-color: var(--accent); }
   .free.on { background: #18213a; border-color: var(--accent); color: var(--fg); }
   ul.items li.freed .value { opacity: .45; text-decoration: line-through; }
+  /* A mask being trimmed: its words, those that stay masked shaded. */
+  .words span { cursor: pointer; border-radius: 3px; padding: 0 1px; }
+  .words span.masked { background: #3a4a72; }
+  .words span:not(.masked) { font-weight: 400; color: var(--dim); text-decoration: underline dotted; }
+  .words span:hover { outline: 1px solid var(--accent); }
+  .hint { color: var(--dim); font-size: 13px; font-weight: 400; margin-top: 4px; }
   ul.items li.freed .ctx { opacity: .45; }
   /* Kept in view at the bottom of the window while the list scrolls. */
   .release { position: sticky; bottom: 12px; z-index: 1; margin: 14px 0 0; padding: 12px 14px; border: 1px solid var(--accent);
@@ -198,6 +204,11 @@ let file = null, result = null, filter = null;
 // document, sent with the terms of the settings; freed are the ones
 // ticked since the last result. Neither is stored: they may be names.
 let docTerms = [], freed = new Set();
+// docTrims are the masks trimmed for the current document, {text, keep}
+// with the parts that stay masked; trims the words chosen since the last
+// result, by mask text: the indices of the words left readable; editing
+// the mask whose words are shown. Not stored either.
+let docTrims = [], trims = new Map(), editing = null;
 let worker = null, modelReady = !LOCAL, nextId = 0;
 const pending = new Map(); // worker requests by id
 
@@ -256,6 +267,24 @@ function releasedTypes() { return [...document.querySelectorAll("#kinds input:ch
 // keepTerms are the terms of the settings and those released for the
 // document, one per line.
 function keepTerms() { return [$("keep").value, ...docTerms].join("\n"); }
+function trimList() { return JSON.stringify(docTrims); }
+
+// words splits a mask into its words and the spaces between them, at
+// even and odd indices.
+function words(text) { return text.split(/(\s+)/); }
+// keptParts returns the parts of a mask that stay masked: the runs of
+// words not left readable, with the spaces inside them.
+function keptParts(text, readable) {
+  const w = words(text), parts = [];
+  let start = -1;
+  // One step past the last word closes the last run.
+  for (let i = 0; i <= w.length + 1; i += 2) {
+    const masked = i < w.length && w[i] !== "" && !readable.has(i);
+    if (masked && start < 0) start = i;
+    if (!masked && start >= 0) { parts.push(w.slice(start, i - 1).join("")); start = -1; }
+  }
+  return parts;
+}
 
 function choose(f) {
   if (!f) return;
@@ -267,6 +296,7 @@ function choose(f) {
   }
   file = f;
   docTerms = [];
+  docTrims = [];
   $("fname").textContent = f.name;
   $("fhint").textContent = size(f.size) + " · cliquer pour en choisir un autre";
   $("go").disabled = !modelReady;
@@ -340,7 +370,8 @@ async function redactLocal(f, bias, strategy, progress) {
   const id = nextId++;
   const m = await new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, progress });
-    worker.postMessage({ id, name: f.name, bytes, bias: Number(bias), strategy, keep: keepTerms(), release: releasedTypes().join(",") }, [bytes]);
+    worker.postMessage({ id, name: f.name, bytes, bias: Number(bias), strategy, keep: keepTerms(), release: releasedTypes().join(","),
+      trim: trimList() }, [bytes]);
   });
   if (result && result.download.startsWith("blob:")) URL.revokeObjectURL(result.download);
   m.response.download = URL.createObjectURL(new Blob([m.document], { type: f.type || "application/octet-stream" }));
@@ -355,6 +386,7 @@ async function redactServer(f, bias, strategy, progress, queued) {
   form.append("strategy", strategy);
   form.append("keep", keepTerms());
   form.append("release", releasedTypes().join(","));
+  form.append("trim", trimList());
   form.append("document", f);
   const r = await fetch("/api/redact?progress", { method: "POST", body: form });
   if (!r.ok) {
@@ -424,7 +456,7 @@ async function run() {
     } else {
       body = await redactServer(file, $("bias").value, strategy(), progress, queued);
     }
-    result = body; filter = null; freed = new Set();
+    result = body; filter = null; freed = new Set(); trims = new Map(); editing = null;
     render();
   } catch (e) {
     $("out").replaceChildren(el("p", "error", "Échec : " + e.message));
@@ -521,18 +553,66 @@ function render() {
     const free = el("button", "free" + (freed.has(x.text) ? " on" : ""), freed.has(x.text) ? "Libéré ✓" : "Libérer");
     free.title = "Laisser ce passage lisible partout dans le document, à la prochaine génération" +
       (x.confidence ? " · confiance du modèle : " + decimal(x.confidence) : "");
-    free.onclick = () => { freed.has(x.text) ? freed.delete(x.text) : freed.add(x.text); render(); };
+    free.onclick = () => {
+      freed.has(x.text) ? freed.delete(x.text) : freed.add(x.text);
+      trims.delete(x.text);
+      render();
+    };
     kind.append(free);
+    // A mask of one word has nothing to trim: it is released or not.
+    if (words(x.text).length > 1 && !freed.has(x.text)) {
+      const cut = trims.get(x.text);
+      const b = el("button", "free" + (editing === x.text || (cut && cut.size) ? " on" : ""),
+        cut && cut.size ? "Retaillé ✓" : "Retailler");
+      b.title = "Laisser lisibles certains mots de ce masque, partout où il apparaît, à la prochaine génération";
+      b.onclick = () => { editing = editing === x.text ? null : x.text; render(); };
+      kind.append(b);
+    }
     const ctx = el("div", "ctx");
     const m = el("mark", null, x.text);
     m.title = "Cliquer pour voir le passage masqué";
     m.onclick = () => m.classList.toggle("show");
     ctx.append(x.before ? "…" + x.before : "", m, x.after ? x.after + "…" : "");
-    li.append(kind, el("div", "value", x.text), ctx);
+    li.append(kind, editing === x.text || trims.has(x.text) ? trimmer(x) : el("div", "value", x.text), ctx);
     ul.append(li);
   }
   out.append(ul);
-  if (freed.size || docTerms.length) out.append(releaseBox(items));
+  if (freed.size || trims.size || docTerms.length || docTrims.length) out.append(releaseBox(items));
+}
+
+// trimmer shows the words of a mask; while it is edited, a click on a
+// word leaves it readable, or masks it again. Left with no word masked,
+// the mask is released.
+function trimmer(x) {
+  const value = el("div", "value words");
+  const cut = trims.get(x.text) || new Set();
+  const w = words(x.text);
+  w.forEach((part, i) => {
+    if (i % 2) { value.append(part); return; }
+    const span = el("span", cut.has(i) ? null : "masked", part);
+    if (editing === x.text) {
+      span.title = cut.has(i) ? "Masquer à nouveau ce mot" : "Laisser ce mot lisible";
+      span.onclick = () => {
+        cut.has(i) ? cut.delete(i) : cut.add(i);
+        if (!keptParts(x.text, cut).length) {
+          trims.delete(x.text);
+          freed.add(x.text);
+          editing = null;
+        } else if (cut.size) {
+          trims.set(x.text, cut);
+        } else {
+          trims.delete(x.text);
+        }
+        render();
+      };
+    }
+    value.append(span);
+  });
+  if (editing === x.text) {
+    value.append(el("div", "hint", "Cliquez sur les mots à laisser lisibles : seuls les mots surlignés resteront masqués. " +
+      "Tous les mots lisibles reviennent à libérer le passage."));
+  }
+  return value;
 }
 
 // releaseBox lists what was released and, from it, what else could be:
@@ -540,14 +620,19 @@ function render() {
 // most part. It only suggests; nothing is released without a click.
 function releaseBox(items) {
   const box = el("div", "release");
-  const n = freed.size;
-  box.append(el("p", null, n
-    ? (n > 1 ? n + " passages libérés : ils resteront lisibles" : "1 passage libéré : il restera lisible") + " dans le document régénéré."
-    : docTerms.length + (docTerms.length > 1 ? " passages libérés" : " passage libéré") + " pour ce document."));
+  const n = freed.size, cut = [...trims].filter(([, c]) => c.size).length;
+  const lines = [];
+  if (n) lines.push((n > 1 ? n + " passages libérés : ils resteront lisibles" : "1 passage libéré : il restera lisible") + " dans le document régénéré.");
+  if (cut) lines.push((cut > 1 ? cut + " masques retaillés : les mots choisis y" : "1 masque retaillé : les mots choisis y") + " resteront lisibles dans le document régénéré.");
+  if (!lines.length) {
+    const done = docTerms.length + docTrims.length;
+    lines.push(done + (done > 1 ? " passages libérés ou retaillés" : " passage libéré ou retaillé") + " pour ce document.");
+  }
+  box.append(el("p", null, lines.join(" ")));
   const acts = el("div", "acts");
   const again = el("button", null, "Régénérer le document");
-  again.disabled = !n || !file;
-  again.onclick = () => { docTerms.push(...freed); run(); };
+  again.disabled = !(n || cut) || !file;
+  again.onclick = () => { commit(); run(); };
   const keep = el("button", "second", "Ajouter aux termes à garder");
   keep.title = "Les garder lisibles aussi dans les prochains documents : ils seront enregistrés dans ce navigateur";
   keep.disabled = !n;
@@ -556,14 +641,15 @@ function releaseBox(items) {
     for (const t of freed) if (!lines.some((l) => l.toLowerCase() === t.toLowerCase())) lines.push(t);
     $("keep").value = lines.join("\n");
     save();
-    docTerms.push(...freed);
+    commit();
     run();
   };
   acts.append(again, keep);
-  if (docTerms.length) {
+  if (docTerms.length || docTrims.length) {
     const reset = el("button", "second", "Tout remasquer");
-    reset.title = "Régénérer sans les passages libérés depuis la liste : " + docTerms.join(", ");
-    reset.onclick = () => { docTerms = []; run(); };
+    reset.title = "Régénérer sans les passages libérés ou retaillés depuis la liste : " +
+      [...docTerms, ...docTrims.map((t) => t.text)].join(", ");
+    reset.onclick = () => { docTerms = []; docTrims = []; run(); };
     acts.append(reset);
   }
   box.append(acts);
@@ -596,13 +682,25 @@ function releaseBox(items) {
     b.onclick = () => {
       for (const c of document.querySelectorAll("#kinds input")) if (c.value === t) c.checked = true;
       save();
-      docTerms.push(...freed);
+      commit();
       run();
     };
     s.append(b);
     box.append(s);
   }
   return box;
+}
+
+// commit adds what was released and trimmed since the last result to
+// what the document is regenerated with. A mask trimmed again replaces
+// its earlier trim.
+function commit() {
+  docTerms.push(...freed);
+  for (const [text, cut] of trims) {
+    if (!cut.size) continue;
+    docTrims = docTrims.filter((t) => t.text !== text);
+    docTrims.push({ text, keep: keptParts(text, cut) });
+  }
 }
 </script>
 </body>

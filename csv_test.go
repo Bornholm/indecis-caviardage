@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -196,5 +197,56 @@ func TestProcessRelease(t *testing.T) {
 	t.Logf("kept %q and DATETIME: %d elements, %d before; warnings %q", term, len(after.Elements), len(before.Elements), after.Warnings)
 	for _, e := range after.Redetected {
 		t.Logf("redetected %q", e.Text)
+	}
+}
+
+func TestProcessTrim(t *testing.T) {
+	m := loadModel(t)
+	dir := t.TempDir()
+	run := func(set settings) *response {
+		res, err := process(m, walkers[".docx"], "demo/compte-rendu.docx", filepath.Join(dir, "out.docx"), set)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	before := run(settings{bias: 5, strategy: anonymizer.Redact})
+	// The longest sensitive mask of four words or more: its last two stay
+	// masked. Not an identifier: go-anon's verification reports a phone
+	// number or an e-mail address left readable, whatever the user chose.
+	var whole element
+	for _, e := range before.Elements {
+		if e.Sensitive != "" && len(strings.Fields(e.Text)) >= 4 && len(e.Text) > len(whole.Text) {
+			whole = e
+		}
+	}
+	if whole.Text == "" {
+		t.Fatal("no sensitive mask of four words")
+	}
+	words := strings.Fields(whole.Text)
+	kept := strings.Join(words[len(words)-2:], " ")
+	raw, _ := json.Marshal([]map[string]any{{"text": whole.Text, "keep": []string{kept}}})
+	after := run(settings{bias: 5, strategy: anonymizer.Redact, trim: newTrimmer(string(raw))})
+	var found bool
+	for _, e := range after.Elements {
+		if e.Text == whole.Text {
+			t.Errorf("%q still masked whole", e.Text)
+		}
+		if e.Text == kept {
+			found = true
+			if e.Sensitive != whole.Sensitive {
+				t.Errorf("%q: category %q, want %q", e.Text, e.Sensitive, whole.Sensitive)
+			}
+			t.Logf("kept %q masked, after %q", kept, e.Before)
+		}
+	}
+	if !found {
+		t.Errorf("%q not masked after trimming %q", kept, whole.Text)
+	}
+	for _, e := range after.Redetected {
+		t.Logf("redetected %q", e.Text)
+		if strings.Contains(whole.Text, e.Text) {
+			t.Errorf("%q, left readable by the trim, reported again", e.Text)
+		}
 	}
 }

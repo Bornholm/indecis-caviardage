@@ -79,9 +79,9 @@ async function start() {
   });
 }
 
-self.onmessage = async ({ data: { id, name, bytes, bias, strategy, keep, release } }) => {
+self.onmessage = async ({ data: { id, name, bytes, bias, strategy, keep, release, trim } }) => {
   try {
-    const { response, document } = await self.caviarder(name, new Uint8Array(bytes), String(bias), strategy, keep, release,
+    const { response, document } = await self.caviarder(name, new Uint8Array(bytes), String(bias), strategy, keep, release, trim,
       (done, total) => post({ type: "work", id, done, total }));
     post({ type: "result", id, response: JSON.parse(response), document: document.buffer }, [document.buffer]);
   } catch (e) {

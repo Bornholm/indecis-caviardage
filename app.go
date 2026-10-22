@@ -196,7 +196,7 @@ func (a *app) redact(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "document manquant")
 		return
 	}
-	set := parseSettings(fields["bias"], fields["strategy"], fields["keep"], fields["release"])
+	set := parseSettings(fields["bias"], fields["strategy"], fields["keep"], fields["release"], fields["trim"])
 
 	var send func(any)
 	if r.URL.Query().Has("progress") {

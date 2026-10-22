@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +19,7 @@ type settings struct {
 	bias     float64
 	strategy anonymizer.Strategy
 	release  *releaser
+	trim     *trimmer
 }
 
 // releasable are the types a whole category of masks can be released
@@ -33,6 +35,8 @@ var aliases = map[string]string{"LOCATION": "LOC", "ORGANIZATION": "ORG"}
 const (
 	maxTerms     = 2000
 	maxTermRunes = 200
+	// maxMaskRunes bounds the text of a mask to trim, longer than a term.
+	maxMaskRunes = 2000
 )
 
 // releaser leaves readable what the user chose to keep: the terms given,
@@ -115,6 +119,12 @@ func (r *releaser) occurrences(text string) []span {
 // when a term covers it whole, « 80 » leaving « temps partiel
 // thérapeutique (80 %) » masked.
 func (r *releaser) apply(text string, found []recognizer.Found) []recognizer.Found {
+	return r.cut(text, found, false)
+}
+
+// cut is apply; with sensitive, the terms are cut out of the masks of a
+// special category too.
+func (r *releaser) cut(text string, found []recognizer.Found, sensitive bool) []recognizer.Found {
 	if r == nil {
 		return found
 	}
@@ -124,7 +134,7 @@ func (r *releaser) apply(text string, found []recognizer.Found) []recognizer.Fou
 		if r.byType(f) {
 			continue
 		}
-		if f.Sensitive != "" {
+		if f.Sensitive != "" && !sensitive {
 			whole := trim(text, span{f.Start, f.End})
 			if !slices.ContainsFunc(kept, func(k span) bool { return k.start <= whole.start && k.end >= whole.end }) {
 				out = append(out, f)
@@ -178,6 +188,112 @@ func trim(text string, p span) span {
 	return span{p.start + i, p.start + j + size}
 }
 
+// trimmer narrows the masks the user trimmed on the page: a mask whose
+// text is one of them is replaced by the parts that stay masked. A mask
+// is trimmed only if its text is the one the page showed, and its parts
+// are found in it in order; otherwise it stays whole.
+type trimmer struct {
+	parts map[string][]string // mask text -> the parts that stay masked
+	// freed holds what the trims leave readable, as terms, for go-anon's
+	// verification passes only (see releasing).
+	freed *releaser
+}
+
+// newTrimmer reads the page's trims, a JSON list of {"text", "keep"}:
+// the text of a mask and the parts of it that stay masked, in order. A
+// trim with nothing left masked is a release, which the page sends as a
+// term. nil means nothing to trim.
+func newTrimmer(raw string) *trimmer {
+	var list []struct {
+		Text string   `json:"text"`
+		Keep []string `json:"keep"`
+	}
+	if json.Unmarshal([]byte(raw), &list) != nil {
+		return nil
+	}
+	t := &trimmer{parts: map[string][]string{}}
+	var freed []string
+	for _, e := range list {
+		text := strings.TrimSpace(e.Text)
+		if len(t.parts) >= maxTerms || text == "" || utf8.RuneCountInString(text) > maxMaskRunes {
+			continue
+		}
+		var parts, gaps []string
+		at := 0
+		for _, p := range e.Keep {
+			p = strings.TrimSpace(p)
+			i := strings.Index(text[at:], p)
+			if p == "" || i < 0 {
+				parts = nil
+				break
+			}
+			gaps = append(gaps, text[at:at+i])
+			parts = append(parts, p)
+			at += i + len(p)
+		}
+		// Nothing left readable is no trim, and would trim forever.
+		if len(parts) == 0 || len(parts) == 1 && parts[0] == text {
+			continue
+		}
+		t.parts[text] = parts
+		freed = append(freed, append(gaps, text[at:])...)
+	}
+	if len(t.parts) == 0 {
+		return nil
+	}
+	t.freed = newReleaser(freed, nil)
+	return t
+}
+
+// apply replaces each trimmed mask of found by its parts, which keep its
+// type, category and confidence. A part trimmed in turn, on a later
+// result, is trimmed too: each part is shorter than its mask, so this
+// ends.
+func (t *trimmer) apply(text string, found []recognizer.Found) []recognizer.Found {
+	if t == nil {
+		return found
+	}
+	var out []recognizer.Found
+	for _, f := range found {
+		pieces := t.pieces(text, f)
+		if pieces == nil {
+			out = append(out, f)
+			continue
+		}
+		for _, p := range pieces {
+			g := f
+			g.Start, g.End, g.Text = p.start, p.end, text[p.start:p.end]
+			out = append(out, t.apply(text, []recognizer.Found{g})...)
+		}
+	}
+	return out
+}
+
+// pieces locates the parts of a trimmed mask in text, nil if the mask is
+// not trimmed or a part is missing.
+func (t *trimmer) pieces(text string, f recognizer.Found) []span {
+	if f.Start < 0 || f.End > len(text) || f.Start >= f.End {
+		return nil
+	}
+	whole := text[f.Start:f.End]
+	trimmed := strings.TrimSpace(whole)
+	parts, ok := t.parts[trimmed]
+	if !ok {
+		return nil
+	}
+	at := f.Start + strings.Index(whole, trimmed)
+	var out []span
+	for _, p := range parts {
+		i := strings.Index(text[at:f.End], p)
+		if i < 0 {
+			return nil
+		}
+		out = append(out, span{at + i, at + i + len(p)})
+		at += i + len(p)
+	}
+	return out
+}
+
 // releasing is the anonymizer's recognizer for documents: the model's
 // passages, less what the user keeps. go-anon's verification passes read
 // through it too, so that a passage kept is not reported as a leak.
@@ -191,13 +307,14 @@ type releasing struct {
 	typed      *releaser
 	typedTexts []string
 	seen       map[string]bool
+	trim       *trimmer
 	// onFound receives what is masked in each text, as the recognizer's
 	// OnFound.
 	onFound func(text string, found []recognizer.Found)
 }
 
-func newReleasing(rec *recognizer.Recognizer, release *releaser) *releasing {
-	r := &releasing{rec: rec, release: release, seen: map[string]bool{}}
+func newReleasing(rec *recognizer.Recognizer, set settings) *releasing {
+	r := &releasing{rec: rec, release: set.release, trim: set.trim, seen: map[string]bool{}}
 	rec.OnFound = func(_ string, found []recognizer.Found) { r.found = found }
 	return r
 }
@@ -228,6 +345,14 @@ func (r *releasing) Recognize(text string) ([]ner.Entity, error) {
 			found = append(found, r.typed.apply(text, []recognizer.Found{f})...)
 		}
 	}
+	found = r.trim.apply(text, found)
+	// A verification pass reads the document with its placeholders: what
+	// a trim left readable around them is not a leak, whatever the model
+	// makes of it there, sensitive masks included. Nowhere else, though:
+	// the words a trim left readable in one mask stay masked elsewhere.
+	if r.trim != nil && strings.Contains(text, "⟦") {
+		found = r.trim.freed.cut(text, found, true)
+	}
 	if r.onFound != nil {
 		r.onFound(text, found)
 	}
@@ -239,9 +364,9 @@ func (r *releasing) Recognize(text string) ([]ner.Entity, error) {
 }
 
 // parseSettings reads the page's fields: the bias, the strategy ("tag"
-// to pseudonymize), the terms to keep, one per line, and the types to
-// release, separated by commas.
-func parseSettings(bias, strategy, keep, release string) settings {
+// to pseudonymize), the terms to keep, one per line, the types to
+// release, separated by commas, and the masks to trim (newTrimmer).
+func parseSettings(bias, strategy, keep, release, trim string) settings {
 	set := settings{bias: 5, strategy: anonymizer.Redact}
 	if b, err := strconv.ParseFloat(bias, 64); err == nil && b >= 0 && b <= 10 {
 		set.bias = b
@@ -250,5 +375,6 @@ func parseSettings(bias, strategy, keep, release string) settings {
 		set.strategy = anonymizer.TagReplace
 	}
 	set.release = newReleaser(strings.Split(keep, "\n"), strings.Split(release, ","))
+	set.trim = newTrimmer(trim)
 	return set
 }

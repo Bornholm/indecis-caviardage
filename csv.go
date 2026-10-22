@@ -219,7 +219,7 @@ func processCSV(ctx context.Context, m *indecis.Model, in io.Reader, out io.Writ
 				} else if len(cached) < maxCached {
 					cached[row.lines[j]] = found
 				}
-				found = set.release.apply(row.lines[j], found)
+				found = set.trim.apply(row.lines[j], set.release.apply(row.lines[j], found))
 				// The passages of the line, cut to the value: the column
 				// name is only there for context.
 				cell.found = cell.found[:0]
