@@ -99,4 +99,4 @@ Sans ce partage du calcul, quatre instances montaient à 1,1 Go (mesuré avec in
 
 ## Licence
 
-GPL-3.0, celle de go-anon, avec lequel le binaire est lié.
+AGPL-3.0. Le binaire est lié à go-anon, sous GPL-3.0, que l'AGPL-3.0 permet de combiner (section 13).
