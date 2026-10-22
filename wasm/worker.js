@@ -2,7 +2,11 @@
 // to load and a document a few seconds to process, which would freeze
 // the page in its main thread. The model files are kept in the browser's
 // Cache Storage, downloaded once per version (model/manifest.json).
-importScripts("memfs.js", "wasm_exec.js");
+// The page names the build in the worker's URL (worker.js?v=…, see make
+// wasm): the files fetched here carry it too, so that the browser's HTTP
+// cache never mixes a script of one build with the module of another.
+const build = self.location.search;
+importScripts("memfs.js" + build, "wasm_exec.js" + build);
 
 // The smallest module with a 128-bit SIMD instruction: browsers accept it
 // when their engine, and the processor under it, support WebAssembly SIMD.
@@ -63,7 +67,7 @@ async function start() {
   go.argv = ["indecis-caviardage"];
   go.env = { TMPDIR: "/tmp" };
   const wasm = simd128 ? "caviardage.wasm" : "caviardage-nosimd.wasm";
-  const { instance } = await WebAssembly.instantiateStreaming(fetch(wasm), go.importObject);
+  const { instance } = await WebAssembly.instantiateStreaming(fetch(wasm + build), go.importObject);
   go.run(instance).then(() => goFailed(new Error("le programme Go s'est arrêté")));
   const info = await ready;
   post({

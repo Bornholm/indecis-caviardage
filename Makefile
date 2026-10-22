@@ -23,14 +23,18 @@ run: build
 # Deux modules : avec WebAssembly SIMD, et sans pour les navigateurs qui ne
 # le prennent pas en charge (le worker choisit). Le manifeste donne la
 # taille des fichiers du modèle, pour la progression, et une version, pour
-# le cache du navigateur.
+# le cache du navigateur. La page ouvre le worker avec une empreinte des
+# scripts et des modules (worker.js?v=…), reprise par le worker pour ce
+# qu'il charge : le cache HTTP ne mêle jamais deux versions.
 wasm:
 	rm -rf $(DIST) && mkdir -p $(DIST)/model
 	GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -o $(DIST)/caviardage.wasm .
 	GOEXPERIMENT= GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -o $(DIST)/caviardage-nosimd.wasm .
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" wasm/worker.js wasm/memfs.js $(DIST)/
 	mkdir -p $(DIST)/demo && cp demo/compte-rendu.docx demo/compte-rendu.odt demo/clients.csv $(DIST)/demo/
-	sed 's/<meta name="mode" content="server">/<meta name="mode" content="local">/' web/index.html > $(DIST)/index.html
+	sed -e 's/<meta name="mode" content="server">/<meta name="mode" content="local">/' \
+	  -e "s/new Worker(\"worker.js\")/new Worker(\"worker.js?v=$$(cd $(DIST) && cat *.wasm *.js | sha256sum | cut -c1-16)\")/" \
+	  web/index.html > $(DIST)/index.html
 	cd $(MODEL) && cp $(MODEL_FILES) $(CURDIR)/$(DIST)/model/
 	cd $(DIST)/model && python3 -c 'import hashlib, json, os, sys; f = sys.argv[1:]; h = hashlib.sha256(); [h.update(open(n, "rb").read()) for n in f]; print(json.dumps({"version": h.hexdigest()[:16], "files": [{"name": n, "size": os.path.getsize(n)} for n in f]}))' $(MODEL_FILES) > manifest.json
 
