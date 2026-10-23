@@ -2,8 +2,8 @@ github.com/bornholm/go-anon v0.3.1-0.20261015164950-355fc63009b6 h1:SLwBmXCu6ZWA
 github.com/bornholm/go-anon v0.3.1-0.20261015164950-355fc63009b6/go.mod h1:q9EiQH9IdPYxfcj3+Htua+WgR0Us4GIJ5uV5j3LZRRA=
 github.com/bornholm/indecis v0.7.0 h1:AiiereieeBgUXCqN3QynsQ0Q7MKQek8U7VtBIei1dQU=
 github.com/bornholm/indecis v0.7.0/go.mod h1:nNkoX8XEWjrabPBAQQBdwkaZBPcaFSjYQWMD4FMTf/I=
-github.com/bornholm/indecis-ner v0.3.1 h1:7aFMuUu+Z8IBDM3hsHHdJbM5g8og2nFE0xGYfm1YlxA=
-github.com/bornholm/indecis-ner v0.3.1/go.mod h1:5Ntao3A6KfTmwjjqK21nUrd2dKKBwfpBO+3ovQHPC0Y=
+github.com/bornholm/indecis-ner v0.3.2 h1:QR4z+awfmiGi07tTAu7bfdZYoJXzrhYE1eXRf3BRnh8=
+github.com/bornholm/indecis-ner v0.3.2/go.mod h1:5Ntao3A6KfTmwjjqK21nUrd2dKKBwfpBO+3ovQHPC0Y=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gomutex/godocx v0.1.5 h1:jAqGmlGnvid1GmrgJulYx/yPnrlr2jzA5LGpOy7Z6AM=
