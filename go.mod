@@ -1,4 +1,4 @@
-module github.com/bornholm/indecis-caviardage
+module github.com/beewii/indecis-caviardage
 
 go 1.27
 
