@@ -2,7 +2,7 @@
 
 Un démonstrateur de caviardage de données personnelles : on dépose un document Word ou OpenDocument, ou un fichier CSV, il en masque les données personnelles et liste ce qu'il a masqué. Tout tourne sur la machine, sur le processeur, en Go pur : le document n'est envoyé nulle part et n'est pas conservé.
 
-La version tout navigateur est en ligne : https://bornholm.github.io/indecis-caviardage/
+La version tout navigateur est en ligne : https://beewii.github.io/indecis-caviardage/
 
 ## Le modèle
 
